@@ -1,0 +1,30 @@
+# cmake stuff
+cmake-build-*/
+CMakeLists.txt.user
+cmake.check_cache
+build*/
+*compile_commands.json
+
+# editor stuff
+*.swp
+.idea/
+venv/
+*.timestamp
+*.synctex.gz
+.clangd/
+.cache/
+
+# benchmark output folder
+*testTuning_*/
+*measurePerf_*/
+
+# sourcetrail stuff
+*.srctrlbm
+*.srctrldb
+*.srctrlprj
+
+# simulation output
+*.vtk
+*.csv
+*.out
+*.log
