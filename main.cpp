@@ -15,6 +15,13 @@
 #include <autopas/utils/Timer.h>
 #include <fstream>
 
+double distSquared(std::array<double, 3> a, std::array<double, 3> b) {
+    using autopas::utils::ArrayMath::sub;
+    using autopas::utils::ArrayMath::dot;
+    const auto c = sub(a, b);   // 3 FLOPS
+    return dot(c, c);           // 3+2=5 FLOPs
+}
+
 /**
  * Mini benchmark tool to estimate the inner most kernel performance of AutoPas
  * @return
@@ -100,12 +107,36 @@ int main() {
     csvFile.close();
     timerOutput.stop();
 
+    // count interactions
+    autopas::utils::Timer timerInteractionCounter;
+    timerInteractionCounter.start();
+    int calcsDist{0};
+    int calcsForce{0};
+    const auto cutoffSquared{cutoff * cutoff};
+    for (const auto p0: cells[0]) {
+        for (const auto p1: cells[1]) {
+            ++calcsDist;
+            if (distSquared(p0.getR(), p1.getR()) <= cutoffSquared) {
+                ++calcsForce;
+            }
+        }
+    }
+    timerInteractionCounter.stop();
+
     // print timer and statistics
 
+    const auto gflops = static_cast<double>(calcsDist * 8 + calcsForce * functor.getNumFlopsPerKernelCall()) * 10e-9;
+
+    using autopas::utils::ArrayUtils::operator<<;
+
+    std::cout << "Particels per cell : " << numParticlesPerCell << "\n"
+              << "Hit rate           : " << (static_cast<double>(calcsForce) / calcsDist) << "\n"
+              << "GFLOPs             : " << gflops << "\n"
+              << "GFLOPs/sec         : " << (gflops / (timerFunctor.getTotalTime() * 10e-9)) << "\n";
     // Macro because we use argument as part of variable names and string literals
 #define printTimer(name) {                                      \
     std::cout                                                   \
-    << std::setw(14)                                            \
+    << std::setw(18)                                            \
     << std::left                                                \
     << #name                                                    \
     << " : "                                                    \
@@ -113,14 +144,9 @@ int main() {
     << std::setw(8)                                             \
     << static_cast<double>(timer##name.getTotalTime()) * 10e-9  \
     << " [s]\n";                                                \
-}
-
-    using autopas::utils::ArrayUtils::operator<<;
-
-    std::cout << "Particels per cell: " << numParticlesPerCell << "\n";
+    }
     printTimer(Initialization);
     printTimer(Functor);
     printTimer(Output);
-
-// Todo: Flop counting, GFLOPs/sec
+    printTimer(InteractionCounter);
 }
