@@ -112,10 +112,10 @@ void csvOutput(Functor &functor, std::vector<Cell> &cells) {
     timer.at("Output").stop();
 }
 
-std::tuple<int, int> countInteractions(std::vector<Cell> &cells, double cutoff) {
+std::tuple<size_t, size_t> countInteractions(std::vector<Cell> &cells, double cutoff) {
     timer.at("InteractionCounter").start();
-    int calcsDist{0};
-    int calcsForce{0};
+    size_t calcsDist{0};
+    size_t calcsForce{0};
     const auto cutoffSquared{cutoff * cutoff};
     for (const auto &p0: cells[0]) {
         for (const auto &p1: cells[1]) {
@@ -147,8 +147,8 @@ int main() {
     // define scenario
     const std::vector<size_t> numParticlesPerCell{1000, 1000};
     constexpr size_t iterations{100};
-    int calcsDistTotal{0};
-    int calcsForceTotal{0};
+    size_t calcsDistTotal{0};
+    size_t calcsForceTotal{0};
     // repeat the whole experiment multiple times and average results
     for (size_t iteration = 0; iteration < iterations; ++iteration) {
         std::vector<Cell> cells{2};
