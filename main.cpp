@@ -15,6 +15,22 @@
 #include <autopas/utils/Timer.h>
 #include <fstream>
 
+// type aliases for ease of use
+using Particle = autopas::MoleculeLJ<double>;
+using Cell = autopas::FullParticleCell<autopas::MoleculeLJ<double>>;
+// some constants that define the benchmark
+constexpr bool shift{false};
+constexpr bool mixing{false};
+constexpr autopas::FunctorN3Modes functorN3Modes{autopas::FunctorN3Modes::Both};
+constexpr bool newton3{true};
+constexpr bool globals{false};
+
+#ifdef __AVX__
+using Functor = autopas::LJFunctorAVX<Particle, shift, mixing, functorN3Modes, globals>;
+#elif __ARM_FEATURE_SVE
+using Functor = autopas::LJFunctorSVE<Particle, shift, mixing, functorN3Modes, globals> ;
+#endif
+
 double distSquared(std::array<double, 3> a, std::array<double, 3> b) {
     using autopas::utils::ArrayMath::sub;
     using autopas::utils::ArrayMath::dot;
@@ -43,41 +59,11 @@ void printTimer() {
     }
 }
 
-/**
- * Mini benchmark tool to estimate the inner most kernel performance of AutoPas
- * @return
- */
-int main() {
-
-    // type aliases for ease of use
-    using Particle = autopas::MoleculeLJ<double>;
-    using Cell = autopas::FullParticleCell<autopas::MoleculeLJ<double>>;
-
-    // some constants that define the benchmark
-    constexpr double cutoff{3.}; // is also the cell size
-    constexpr bool shift{false};
-    constexpr bool mixing{false};
-    constexpr autopas::FunctorN3Modes functorN3Modes{autopas::FunctorN3Modes::Both};
-    constexpr bool newton3{true};
-    constexpr bool globals{false};
-    // choose functor based on available architecture
-#ifdef __AVX__
-    autopas::LJFunctorAVX<Particle, shift, mixing, functorN3Modes, globals> functor{cutoff};
-#elif __ARM_FEATURE_SVE
-    autopas::LJFunctorSVE<Particle, shift, mixing, functorN3Modes, globals> functor{cutoff};
-#endif
-    constexpr double epsilon24{24.};
-    constexpr double sigmaSquare{1.};
-    functor.setParticleProperties(epsilon24, sigmaSquare);
-
-    // define scenario
-    constexpr size_t numCells{2};
-    std::array<Cell, numCells> cells;
-    constexpr std::array<size_t, numCells> numParticlesPerCell{100, 50};
-
+void initialization(Functor &functor, std::vector<Cell> &cells, const std::vector<size_t> &numParticlesPerCell,
+                    double cutoff) {
     // initialize cells with randomly distributed particles
     timer.at("Initialization").start();
-    for (size_t cellId = 0; cellId < numCells; ++cellId) {
+    for (size_t cellId = 0; cellId < numParticlesPerCell.size(); ++cellId) {
         for (size_t particleId = 0; particleId < numParticlesPerCell[cellId]; ++particleId) {
             Particle p{
                     {
@@ -88,28 +74,29 @@ int main() {
                     },
                     {0., 0., 0.,},
                     // every cell gets its own id space
-                    particleId + ((std::numeric_limits<size_t>::max() / numCells) * cellId),
+                    particleId + ((std::numeric_limits<size_t>::max() / numParticlesPerCell.size()) * cellId),
                     0};
             cells[cellId].addParticle(p);
         }
         functor.SoALoader(cells[cellId], cells[cellId]._particleSoABuffer, 0);
     }
     timer.at("Initialization").stop();
+}
 
-    // actual benchmark
+void applyFunctor(Functor &functor, std::vector<Cell> &cells) {
     timer.at("Functor").start();
-    // TODO offer option to also test FunctorSingle
     functor.SoAFunctorPair(cells[0]._particleSoABuffer, cells[1]._particleSoABuffer, newton3);
     timer.at("Functor").stop();
+}
 
-    // print particles to CSV for checking and prevent compiler from optimizing everything away.
+void csvOutput(Functor &functor, std::vector<Cell> &cells) {
     timer.at("Output").start();
     std::ofstream csvFile("particles.csv");
     if (not csvFile.is_open()) {
         throw std::runtime_error("FILE NOT OPEN!");
     }
     csvFile << "CellId,ParticleId,rX,rY,rZ,fX,fY,fZ\n";
-    for (size_t cellId = 0; cellId < numCells; ++cellId) {
+    for (size_t cellId = 0; cellId < cells.size(); ++cellId) {
         functor.SoAExtractor(cells[cellId], cells[cellId]._particleSoABuffer, 0);
         for (size_t particleId = 0; particleId < cells[cellId].numParticles(); ++particleId) {
             const auto &p = cells[cellId][particleId];
@@ -121,17 +108,17 @@ int main() {
                     << "\n";
         }
     }
-
     csvFile.close();
     timer.at("Output").stop();
+}
 
-    // count interactions
+std::tuple<int, int> countInteractions(std::vector<Cell> &cells, double cutoff) {
     timer.at("InteractionCounter").start();
     int calcsDist{0};
     int calcsForce{0};
     const auto cutoffSquared{cutoff * cutoff};
-    for (const auto p0: cells[0]) {
-        for (const auto p1: cells[1]) {
+    for (const auto &p0: cells[0]) {
+        for (const auto &p1: cells[1]) {
             ++calcsDist;
             if (distSquared(p0.getR(), p1.getR()) <= cutoffSquared) {
                 ++calcsForce;
@@ -139,9 +126,41 @@ int main() {
         }
     }
     timer.at("InteractionCounter").stop();
+    return {calcsDist, calcsForce};
+}
+
+/**
+ * Mini benchmark tool to estimate the inner most kernel performance of AutoPas
+ * @return
+ */
+int main() {
+
+    constexpr double cutoff{3.}; // is also the cell size
+
+    // choose functor based on available architecture
+    Functor functor{cutoff};
+
+    constexpr double epsilon24{24.};
+    constexpr double sigmaSquare{1.};
+    functor.setParticleProperties(epsilon24, sigmaSquare);
+
+    // define scenario
+    std::vector<Cell> cells{2};
+    const std::vector<size_t> numParticlesPerCell{1000, 1000};
+
+    initialization(functor, cells, numParticlesPerCell, cutoff);
+
+    // TODO offer option to also test FunctorSingle
+    // actual benchmark
+    applyFunctor(functor, cells);
+
+    // print particles to CSV for checking and prevent compiler from optimizing everything away.
+    csvOutput(functor, cells);
+
+    // gather data for analysis
+    const auto [calcsDist, calcsForce] = countInteractions(cells, cutoff);
 
     // print timer and statistics
-
     const auto gflops =
             static_cast<double>(calcsDist * 8 + calcsForce * functor.getNumFlopsPerKernelCall()) * 10e-9;
 
