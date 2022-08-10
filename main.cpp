@@ -22,6 +22,27 @@ double distSquared(std::array<double, 3> a, std::array<double, 3> b) {
     return dot(c, c);           // 3+2=5 FLOPs
 }
 
+std::map<std::string, autopas::utils::Timer> timer{
+        {"Initialization",     autopas::utils::Timer()},
+        {"Functor",            autopas::utils::Timer()},
+        {"Output",             autopas::utils::Timer()},
+        {"InteractionCounter", autopas::utils::Timer()},
+};
+
+void printTimer() {
+    for (const auto &[name, t]: timer) {
+        std::cout
+                << std::setw(18)
+                << std::left
+                << name
+                << " : "
+                << std::setprecision(3)
+                << std::setw(8)
+                << static_cast<double>(timer[name].getTotalTime()) * 10e-9
+                << " [s]\n";
+    }
+}
+
 /**
  * Mini benchmark tool to estimate the inner most kernel performance of AutoPas
  * @return
@@ -55,8 +76,7 @@ int main() {
     constexpr std::array<size_t, numCells> numParticlesPerCell{100, 50};
 
     // initialize cells with randomly distributed particles
-    autopas::utils::Timer timerInitialization;
-    timerInitialization.start();
+    timer.at("Initialization").start();
     for (size_t cellId = 0; cellId < numCells; ++cellId) {
         for (size_t particleId = 0; particleId < numParticlesPerCell[cellId]; ++particleId) {
             Particle p{
@@ -74,18 +94,16 @@ int main() {
         }
         functor.SoALoader(cells[cellId], cells[cellId]._particleSoABuffer, 0);
     }
-    timerInitialization.stop();
+    timer.at("Initialization").stop();
 
     // actual benchmark
-    autopas::utils::Timer timerFunctor;
-    timerFunctor.start();
+    timer.at("Functor").start();
     // TODO offer option to also test FunctorSingle
     functor.SoAFunctorPair(cells[0]._particleSoABuffer, cells[1]._particleSoABuffer, newton3);
-    timerFunctor.stop();
+    timer.at("Functor").stop();
 
     // print particles to CSV for checking and prevent compiler from optimizing everything away.
-    autopas::utils::Timer timerOutput;
-    timerOutput.start();
+    timer.at("Output").start();
     std::ofstream csvFile("particles.csv");
     if (not csvFile.is_open()) {
         throw std::runtime_error("FILE NOT OPEN!");
@@ -105,11 +123,10 @@ int main() {
     }
 
     csvFile.close();
-    timerOutput.stop();
+    timer.at("Output").stop();
 
     // count interactions
-    autopas::utils::Timer timerInteractionCounter;
-    timerInteractionCounter.start();
+    timer.at("InteractionCounter").start();
     int calcsDist{0};
     int calcsForce{0};
     const auto cutoffSquared{cutoff * cutoff};
@@ -121,32 +138,19 @@ int main() {
             }
         }
     }
-    timerInteractionCounter.stop();
+    timer.at("InteractionCounter").stop();
 
     // print timer and statistics
 
-    const auto gflops = static_cast<double>(calcsDist * 8 + calcsForce * functor.getNumFlopsPerKernelCall()) * 10e-9;
+    const auto gflops =
+            static_cast<double>(calcsDist * 8 + calcsForce * functor.getNumFlopsPerKernelCall()) * 10e-9;
 
     using autopas::utils::ArrayUtils::operator<<;
 
     std::cout << "Particels per cell : " << numParticlesPerCell << "\n"
               << "Hit rate           : " << (static_cast<double>(calcsForce) / calcsDist) << "\n"
               << "GFLOPs             : " << gflops << "\n"
-              << "GFLOPs/sec         : " << (gflops / (timerFunctor.getTotalTime() * 10e-9)) << "\n";
-    // Macro because we use argument as part of variable names and string literals
-#define printTimer(name) {                                      \
-    std::cout                                                   \
-    << std::setw(18)                                            \
-    << std::left                                                \
-    << #name                                                    \
-    << " : "                                                    \
-    << std::setprecision(3)                                     \
-    << std::setw(8)                                             \
-    << static_cast<double>(timer##name.getTotalTime()) * 10e-9  \
-    << " [s]\n";                                                \
-    }
-    printTimer(Initialization);
-    printTimer(Functor);
-    printTimer(Output);
-    printTimer(InteractionCounter);
+              << "GFLOPs/sec         : " << (gflops / (timer.at("Functor").getTotalTime() * 10e-9)) << "\n";
+
+    printTimer();
 }
