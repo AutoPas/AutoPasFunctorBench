@@ -145,31 +145,41 @@ int main() {
     functor.setParticleProperties(epsilon24, sigmaSquare);
 
     // define scenario
-    std::vector<Cell> cells{2};
     const std::vector<size_t> numParticlesPerCell{1000, 1000};
+    constexpr size_t iterations{100};
+    int calcsDistTotal{0};
+    int calcsForceTotal{0};
+    // repeat the whole experiment multiple times and average results
+    for (size_t iteration = 0; iteration < iterations; ++iteration) {
+        std::vector<Cell> cells{2};
 
-    initialization(functor, cells, numParticlesPerCell, cutoff);
+        initialization(functor, cells, numParticlesPerCell, cutoff);
 
-    // TODO offer option to also test FunctorSingle
-    // actual benchmark
-    applyFunctor(functor, cells);
+        // TODO offer option to also test FunctorSingle
+        // actual benchmark
+        applyFunctor(functor, cells);
 
-    // print particles to CSV for checking and prevent compiler from optimizing everything away.
-    csvOutput(functor, cells);
+        // print particles to CSV for checking and prevent compiler from optimizing everything away.
+        csvOutput(functor, cells);
 
-    // gather data for analysis
-    const auto [calcsDist, calcsForce] = countInteractions(cells, cutoff);
+        // gather data for analysis
+        const auto [calcsDist, calcsForce] = countInteractions(cells, cutoff);
+        calcsDistTotal += calcsDist;
+        calcsForceTotal += calcsForce;
+    }
 
     // print timer and statistics
     const auto gflops =
-            static_cast<double>(calcsDist * 8 + calcsForce * functor.getNumFlopsPerKernelCall()) * 10e-9;
+            static_cast<double>(calcsDistTotal * 8 + calcsForceTotal * functor.getNumFlopsPerKernelCall()) * 10e-9;
 
     using autopas::utils::ArrayUtils::operator<<;
 
-    std::cout << "Particels per cell : " << numParticlesPerCell << "\n"
-              << "Hit rate           : " << (static_cast<double>(calcsForce) / calcsDist) << "\n"
-              << "GFLOPs             : " << gflops << "\n"
-              << "GFLOPs/sec         : " << (gflops / (timer.at("Functor").getTotalTime() * 10e-9)) << "\n";
+    std::cout
+            << "Iterations         : " << iterations << "\n"
+            << "Particels per cell : " << numParticlesPerCell << "\n"
+            << "Avgerage hit rate  : " << (static_cast<double>(calcsForceTotal) / calcsDistTotal) << "\n"
+            << "GFLOPs             : " << gflops << "\n"
+            << "GFLOPs/sec         : " << (gflops / (timer.at("Functor").getTotalTime() * 10e-9)) << "\n";
 
     printTimer();
 }
