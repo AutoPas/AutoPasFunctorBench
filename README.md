@@ -13,7 +13,7 @@ These are the compile instructions used on FUGAKU. Details might be subject to c
 
 ### GCC
 ```bash
-cmake                                                                                           \
+$ cmake                                                                                           \
     -DCMAKE_BUILD_TYPE=Release                                                                  \
     -DCMAKE_C_COMPILER=gcc                                                                      \
     -DCMAKE_CXX_COMPILER=g++                                                                    \
@@ -23,12 +23,12 @@ cmake                                                                           
     -DAUTOPAS_VECTOR_INSTRUCTIONS=NATIVE                                                        \
     ..
 
-CC=gcc CXX=g++ make AutoPasFunctorBench -j12
+$ CC=gcc CXX=g++ make AutoPasFunctorBench -j12
 ```
 
 ### FCC
 ```bash
-cmake                                                                                           \
+$ cmake                                                                                           \
     -DCMAKE_BUILD_TYPE=Release                                                                  \
     -DCMAKE_C_COMPILER=fcc                                                                      \
     -DCMAKE_CXX_COMPILER=FCC                                                                    \
@@ -38,9 +38,9 @@ cmake                                                                           
     -DAUTOPAS_VECTOR_INSTRUCTIONS=DEFAULT                                                       \
     ..
 
-CC='fcc -Nclang -mcpu=a64fx -std=c17 -stdlib=libc++'            \
-CXX='FCC -Nclang -mcpu=a64fx -std=c++17 -stdlib=libc++'         \
-make AutoPasFunctorBench -j12
+$ CC='fcc -Nclang -mcpu=a64fx -std=c17 -stdlib=libc++'              \
+  CXX='FCC -Nclang -mcpu=a64fx -std=c++17 -stdlib=libc++'           \
+    make AutoPasFunctorBench -j12
 ```
 
 ## AutoPas Version
