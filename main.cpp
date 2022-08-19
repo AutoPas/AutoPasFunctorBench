@@ -1,5 +1,9 @@
 #include <iostream>
 
+#ifdef ENABLE_FAPP
+#include "fj_tool/fapp.h"
+#endif
+
 // clang-format off
 #ifdef __AVX__
 #include <autopas/molecularDynamics/LJFunctorAVX.h>
@@ -107,7 +111,13 @@ void initialization(Functor &functor, std::vector<Cell> &cells, const std::vecto
 
 void applyFunctor(Functor &functor, std::vector<Cell> &cells) {
     timer.at("Functor").start();
+#ifdef ENABLE_FAPP
+    fapp_start("SoAFunctorPair", 1, 0);
+#endif
     functor.SoAFunctorPair(cells[0]._particleSoABuffer, cells[1]._particleSoABuffer, newton3);
+#ifdef ENABLE_FAPP
+    fapp_stop("SoAFunctorPair", 1, 0);
+#endif
     timer.at("Functor").stop();
 }
 

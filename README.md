@@ -43,5 +43,10 @@ $ CC='fcc -Nclang -mcpu=a64fx -std=c17 -stdlib=libc++'              \
     make AutoPasFunctorBench -j12
 ```
 
+## Profiling
+
+The code contains optional measurement regions for Fujitsu's Advanced Performance Profiler.
+To enable them set the CMake variable `ENABLE_FAPP=ON`.
+
 ## AutoPas Version
 To select which version of AutoPas to benchmark change e.g. `GIT_TAG` in `cmake/modules/autopas.cmake`.
