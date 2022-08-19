@@ -31,6 +31,28 @@ using Functor = autopas::LJFunctorAVX<Particle, shift, mixing, functorN3Modes, g
 using Functor = autopas::LJFunctorSVE<Particle, shift, mixing, functorN3Modes, globals> ;
 #endif
 
+void checkFunctorType(const Functor &fun) {
+    int identificationHits = 0;
+#ifdef __AVX__
+    if (dynamic_cast<const autopas::LJFunctorAVX<Particle, shift, mixing, functorN3Modes, globals> *>(&fun)) {
+        std::cout << "Using AVX Functor" << std::endl;
+        ++identificationHits;
+    }
+#endif
+#ifdef __ARM_FEATURE_SVE
+    if (dynamic_cast<const autopas::LJFunctorSVE<Particle, shift, mixing, functorN3Modes, globals> *>(&fun)) {
+        std::cout << "Using SVE Functor" << std::endl;
+        ++identificationHits;
+    }
+#endif
+    if (identificationHits != 1) {
+        throw std::runtime_error(
+                "checkFunctorType matched "
+                + std::to_string(identificationHits)
+                + " types! There should only be one match.");
+    }
+}
+
 double distSquared(std::array<double, 3> a, std::array<double, 3> b) {
     using autopas::utils::ArrayMath::sub;
     using autopas::utils::ArrayMath::dot;
@@ -139,6 +161,7 @@ int main() {
 
     // choose functor based on available architecture
     Functor functor{cutoff};
+    checkFunctorType(functor);
 
     constexpr double epsilon24{24.};
     constexpr double sigmaSquare{1.};
