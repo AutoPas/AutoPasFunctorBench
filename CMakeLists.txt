@@ -9,12 +9,16 @@ include(autopas)
 # TODO fcc enables this by default. Add flags to (de-)activate depending on the compiler
 option(ENABLE_FAPP "Activate calls to Fujitsu Application Performance Profiler" OFF)
 
+option(FORCE_AVX2 "Forcibly downgrades functor to AVX2, even if on machine with AVX512 enabled" OFF)
+
 add_executable(AutoPasFunctorBench main.cpp)
 target_link_libraries(AutoPasFunctorBench
         PUBLIC
         autopas
+        molecularDynamicsLibrary
         )
 target_compile_definitions(AutoPasFunctorBench
         PUBLIC
         $<$<BOOL:${ENABLE_FAPP}>:ENABLE_FAPP>
+        $<$<BOOL:${FORCE_AVX2}>:FORCE_AVX2>
         )

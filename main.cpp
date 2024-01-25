@@ -5,8 +5,10 @@
 #endif
 
 // clang-format off
-#ifdef __AVX__
-#include <autopas/molecularDynamics/LJFunctorAVX.h>
+#if defined __AVX512F__ && !defined FORCE_AVX2
+#include <molecularDynamicsLibrary/LJFunctorAVX512_Mask.h>
+#elif __AVX__
+#include <molecularDynamicsLibrary/LJFunctorAVX.h>
 #elif __ARM_FEATURE_SVE
 #include <autopas/molecularDynamics/LJFunctorSVE.h>
 #else
@@ -14,31 +16,40 @@
 #endif
 // clang-format on
 
-#include <autopas/molecularDynamics/MoleculeLJ.h>
+#include <molecularDynamicsLibrary/MoleculeLJ.h>
 #include <autopas/cells/FullParticleCell.h>
 #include <autopas/utils/Timer.h>
 #include <fstream>
 
 // type aliases for ease of use
-using Particle = autopas::MoleculeLJ<double>;
-using Cell = autopas::FullParticleCell<autopas::MoleculeLJ<double>>;
+using Particle = mdLib::MoleculeLJ;
+using Cell = autopas::FullParticleCell<mdLib::MoleculeLJ>;
 // some constants that define the benchmark
 constexpr bool shift{false};
-constexpr bool mixing{false};
+constexpr bool mixing{true};
 constexpr autopas::FunctorN3Modes functorN3Modes{autopas::FunctorN3Modes::Both};
 constexpr bool newton3{true};
 constexpr bool globals{false};
 
-#ifdef __AVX__
-using Functor = autopas::LJFunctorAVX<Particle, shift, mixing, functorN3Modes, globals>;
+#if defined __AVX512F__ && !defined FORCE_AVX2
+using Functor = mdLib::LJFunctorAVX512_Mask<Particle, shift, mixing, functorN3Modes, globals>;
+#elif __AVX__
+using Functor = mdLib::LJFunctorAVX<Particle, shift, mixing, functorN3Modes, globals>;
 #elif __ARM_FEATURE_SVE
-using Functor = autopas::LJFunctorSVE<Particle, shift, mixing, functorN3Modes, globals> ;
+using Functor = mdLib::LJFunctorSVE<Particle, shift, mixing, functorN3Modes, globals> ;
 #endif
 
 void checkFunctorType(const Functor &fun) {
     int identificationHits = 0;
-#ifdef __AVX__
-    if (dynamic_cast<const autopas::LJFunctorAVX<Particle, shift, mixing, functorN3Modes, globals> *>(&fun)) {
+#if (defined __AVX512F__ && !defined FORCE_AVX2)
+    if (dynamic_cast<const mdLib::LJFunctorAVX512_Mask<Particle, shift, mixing, functorN3Modes, globals> *>(&fun)) {
+        std::cout << "Using AVX512_Mask Functor" << std::endl;
+        ++identificationHits;
+    }
+#endif
+
+#if (defined __AVX__ && !defined __AVX512F__) || (defined __AVX__ && defined FORCE_AVX2)
+    if (dynamic_cast<const mdLib::LJFunctorAVX<Particle, shift, mixing, functorN3Modes, globals> *>(&fun)) {
         std::cout << "Using AVX Functor" << std::endl;
         ++identificationHits;
     }
@@ -101,10 +112,10 @@ void initialization(Functor &functor, std::vector<Cell> &cells, const std::vecto
                     {0., 0., 0.,},
                     // every cell gets its own id space
                     particleId + ((std::numeric_limits<size_t>::max() / numParticlesPerCell.size()) * cellId),
-                    0};
+                    particleId % 5};
             cells[cellId].addParticle(p);
         }
-        functor.SoALoader(cells[cellId], cells[cellId]._particleSoABuffer, 0);
+        functor.SoALoader(cells[cellId], cells[cellId]._particleSoABuffer, 0, false);
     }
     timer.at("Initialization").stop();
 }
@@ -130,7 +141,7 @@ void csvOutput(Functor &functor, std::vector<Cell> &cells) {
     csvFile << "CellId,ParticleId,rX,rY,rZ,fX,fY,fZ\n";
     for (size_t cellId = 0; cellId < cells.size(); ++cellId) {
         functor.SoAExtractor(cells[cellId], cells[cellId]._particleSoABuffer, 0);
-        for (size_t particleId = 0; particleId < cells[cellId].numParticles(); ++particleId) {
+        for (size_t particleId = 0; particleId < cells[cellId].getNumberOfParticles(autopas::IteratorBehavior::owned); ++particleId) {
             const auto &p = cells[cellId][particleId];
             using autopas::utils::ArrayUtils::to_string;
             csvFile << cellId << ","
@@ -170,12 +181,27 @@ int main() {
     constexpr double cutoff{3.}; // is also the cell size
 
     // choose functor based on available architecture
-    Functor functor{cutoff};
+    // todo this is now hard-coded to have mixing - this should be somewhat more flexible
+    ParticlePropertiesLibrary<double, size_t> PPL{cutoff};
+    Functor functor{cutoff, PPL};
+
     checkFunctorType(functor);
 
-    constexpr double epsilon24{24.};
-    constexpr double sigmaSquare{1.};
-    functor.setParticleProperties(epsilon24, sigmaSquare);
+    // 5 site types to provide some variation (requiring gathering that is somewhat similar to a realistic scenario)
+    if constexpr (mixing) {
+        PPL.addSiteType(0,1.,1.,1.);
+        PPL.addSiteType(1,1.,1.,1.);
+        PPL.addSiteType(2,1.,1.,1.);
+        PPL.addSiteType(3,1.,1.,1.);
+        PPL.addSiteType(4,1.,1.,1.);
+        PPL.calculateMixingCoefficients();
+    } else {
+        constexpr double epsilon24{24.};
+        constexpr double sigmaSquare{1.};
+        functor.setParticleProperties(epsilon24, sigmaSquare);
+    }
+
+
 
     // define scenario
     const std::vector<size_t> numParticlesPerCell{1000, 1000};
@@ -203,7 +229,9 @@ int main() {
 
     // print timer and statistics
     const auto gflops =
-            static_cast<double>(calcsDistTotal * 8 + calcsForceTotal * functor.getNumFlopsPerKernelCall()) * 10e-9;
+            static_cast<double>(calcsDistTotal * 8 + calcsForceTotal * (newton3 ? 18 : 15)) * 10e-9;
+//    const auto gflops =
+//            static_cast<double>(calcsDistTotal * 8 + calcsForceTotal * functor.getNumFlopsPerKernelCall()) * 10e-9;
 
     using autopas::utils::ArrayUtils::operator<<;
 
