@@ -10,7 +10,7 @@
 #elif __AVX__
 #include <molecularDynamicsLibrary/LJFunctorAVX.h>
 #elif __ARM_FEATURE_SVE
-#include <autopas/molecularDynamics/LJFunctorSVE.h>
+#include <molecularDynamicsLibrary/LJFunctorSVE.h>
 #else
 #error "Platform supports neither AVX nor ARM!"
 #endif
@@ -100,6 +100,8 @@ void initialization(Functor &functor, std::vector<Cell> &cells, const std::vecto
                     double cutoff) {
     // initialize cells with randomly distributed particles
     timer.at("Initialization").start();
+    cells[0].reserve(numParticlesPerCell[0]);
+    cells[1].reserve(numParticlesPerCell[1]);
     for (size_t cellId = 0; cellId < numParticlesPerCell.size(); ++cellId) {
         for (size_t particleId = 0; particleId < numParticlesPerCell[cellId]; ++particleId) {
             Particle p{
@@ -205,27 +207,26 @@ int main() {
 
     // define scenario
     const std::vector<size_t> numParticlesPerCell{1000, 1000};
-    constexpr size_t iterations{100};
+    constexpr size_t iterations{500};
     size_t calcsDistTotal{0};
     size_t calcsForceTotal{0};
     // repeat the whole experiment multiple times and average results
+    std::vector<Cell> cells{2};
+
+    initialization(functor, cells, numParticlesPerCell, cutoff);
+
     for (size_t iteration = 0; iteration < iterations; ++iteration) {
-        std::vector<Cell> cells{2};
-
-        initialization(functor, cells, numParticlesPerCell, cutoff);
-
         // TODO offer option to also test FunctorSingle
         // actual benchmark
         applyFunctor(functor, cells);
-
-        // print particles to CSV for checking and prevent compiler from optimizing everything away.
-        csvOutput(functor, cells);
-
-        // gather data for analysis
-        const auto [calcsDist, calcsForce] = countInteractions(cells, cutoff);
-        calcsDistTotal += calcsDist;
-        calcsForceTotal += calcsForce;
     }
+    // print particles to CSV for checking and prevent compiler from optimizing everything away.
+    csvOutput(functor, cells);
+
+    // gather data for analysis
+    const auto [calcsDist, calcsForce] = countInteractions(cells, cutoff);
+    calcsDistTotal += calcsDist;
+    calcsForceTotal += calcsForce;
 
     // print timer and statistics
     const auto gflops =
