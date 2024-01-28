@@ -207,7 +207,7 @@ int main() {
 
     // define scenario
     const std::vector<size_t> numParticlesPerCell{1000, 1000};
-    constexpr size_t iterations{500};
+    constexpr size_t iterations{1000};
     size_t calcsDistTotal{0};
     size_t calcsForceTotal{0};
     // repeat the whole experiment multiple times and average results
