@@ -16,14 +16,14 @@
 #endif
 // clang-format on
 
-#include <molecularDynamicsLibrary/MoleculeLJ.h>
+#include <molecularDynamicsLibrary/MoleculeLJ_NoPPL.h>
 #include <autopas/cells/FullParticleCell.h>
 #include <autopas/utils/Timer.h>
 #include <fstream>
 
 // type aliases for ease of use
-using Particle = mdLib::MoleculeLJ;
-using Cell = autopas::FullParticleCell<mdLib::MoleculeLJ>;
+using Particle = mdLib::MoleculeLJ_NoPPL;
+using Cell = autopas::FullParticleCell<mdLib::MoleculeLJ_NoPPL>;
 // some constants that define the benchmark
 constexpr bool shift{false};
 constexpr bool mixing{true};
@@ -114,7 +114,7 @@ void initialization(Functor &functor, std::vector<Cell> &cells, const std::vecto
                     {0., 0., 0.,},
                     // every cell gets its own id space
                     particleId + ((std::numeric_limits<size_t>::max() / numParticlesPerCell.size()) * cellId),
-                    particleId % 5};
+                    1., 0.5};
             cells[cellId].addParticle(p);
         }
         functor.SoALoader(cells[cellId], cells[cellId]._particleSoABuffer, 0, false);
@@ -191,12 +191,7 @@ int main() {
 
     // 5 site types to provide some variation (requiring gathering that is somewhat similar to a realistic scenario)
     if constexpr (mixing) {
-        PPL.addSiteType(0,1.,1.,1.);
-        PPL.addSiteType(1,1.,1.,1.);
-        PPL.addSiteType(2,1.,1.,1.);
-        PPL.addSiteType(3,1.,1.,1.);
-        PPL.addSiteType(4,1.,1.,1.);
-        PPL.calculateMixingCoefficients();
+
     } else {
         constexpr double epsilon24{24.};
         constexpr double sigmaSquare{1.};
