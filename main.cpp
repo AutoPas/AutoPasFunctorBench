@@ -206,20 +206,23 @@ int main() {
 
 
     // define scenario
-    const std::vector<size_t> numParticlesPerCell{1000, 1000};
-    constexpr size_t iterations{1000};
+    const std::vector<size_t> numParticlesPerCell{21, 21};
+    constexpr size_t iterations{100};
     size_t calcsDistTotal{0};
     size_t calcsForceTotal{0};
     // repeat the whole experiment multiple times and average results
     std::vector<Cell> cells{2};
 
-    initialization(functor, cells, numParticlesPerCell, cutoff);
+    for (size_t j = 0; j < 1000; ++j) {
+        initialization(functor, cells, numParticlesPerCell, cutoff);
 
-    for (size_t iteration = 0; iteration < iterations; ++iteration) {
-        // TODO offer option to also test FunctorSingle
-        // actual benchmark
-        applyFunctor(functor, cells);
+        for (size_t iteration = 0; iteration < iterations; ++iteration) {
+            // TODO offer option to also test FunctorSingle
+            // actual benchmark
+            applyFunctor(functor, cells);
+        }
     }
+
     // print particles to CSV for checking and prevent compiler from optimizing everything away.
     csvOutput(functor, cells);
 
