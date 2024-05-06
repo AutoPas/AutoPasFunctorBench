@@ -11,6 +11,8 @@ option(ENABLE_FAPP "Activate calls to Fujitsu Application Performance Profiler" 
 
 option(FORCE_AVX2 "Forcibly downgrades functor to AVX2, even if on machine with AVX512 enabled" OFF)
 
+option(ENABLE_HWY "Activates HWY functor" ON)
+
 add_executable(AutoPasFunctorBench main.cpp)
 target_link_libraries(AutoPasFunctorBench
         PUBLIC
@@ -21,4 +23,5 @@ target_compile_definitions(AutoPasFunctorBench
         PUBLIC
         $<$<BOOL:${ENABLE_FAPP}>:ENABLE_FAPP>
         $<$<BOOL:${FORCE_AVX2}>:FORCE_AVX2>
+        $<$<BOOL:${ENABLE_HWY}>:ENABLE_HWY>
         )

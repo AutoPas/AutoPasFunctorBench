@@ -5,9 +5,10 @@
 #endif
 
 // clang-format off
-#if defined __AVX512F__ && !defined FORCE_AVX2
-#include <molecularDynamicsLibrary/LJFunctorAVX512_Mask.h>
-#elif __AVX__
+
+#if defined ENABLE_HWY
+#include <molecularDynamicsLibrary/LJFunctorHWY.h>
+#elif defined __AVX__
 #include <molecularDynamicsLibrary/LJFunctorAVX.h>
 #elif __ARM_FEATURE_SVE
 #include <molecularDynamicsLibrary/LJFunctorSVE.h>
@@ -26,29 +27,31 @@ using Particle = mdLib::MoleculeLJ;
 using Cell = autopas::FullParticleCell<mdLib::MoleculeLJ>;
 // some constants that define the benchmark
 constexpr bool shift{false};
-constexpr bool mixing{true};
+constexpr bool mixing{false};
 constexpr autopas::FunctorN3Modes functorN3Modes{autopas::FunctorN3Modes::Both};
 constexpr bool newton3{true};
 constexpr bool globals{false};
 
-#if defined __AVX512F__ && !defined FORCE_AVX2
-using Functor = mdLib::LJFunctorAVX512_Mask<Particle, shift, mixing, functorN3Modes, globals>;
+#if defined ENABLE_HWY
+using Functor = mdLib::LJFunctorHWY<Particle, shift, mixing, functorN3Modes, globals>;
 #elif __AVX__
 using Functor = mdLib::LJFunctorAVX<Particle, shift, mixing, functorN3Modes, globals>;
 #elif __ARM_FEATURE_SVE
 using Functor = mdLib::LJFunctorSVE<Particle, shift, mixing, functorN3Modes, globals> ;
 #endif
 
+
 void checkFunctorType(const Functor &fun) {
     int identificationHits = 0;
-#if (defined __AVX512F__ && !defined FORCE_AVX2)
-    if (dynamic_cast<const mdLib::LJFunctorAVX512_Mask<Particle, shift, mixing, functorN3Modes, globals> *>(&fun)) {
-        std::cout << "Using AVX512_Mask Functor" << std::endl;
+
+#if defined ENABLE_HWY
+    if (dynamic_cast<const mdLib::LJFunctorHWY<Particle, shift, mixing, functorN3Modes, globals> *>(&fun)) {
+        std::cout << "Using HWY Functor" << std::endl;
         ++identificationHits;
     }
 #endif
 
-#if (defined __AVX__ && !defined __AVX512F__) || (defined __AVX__ && defined FORCE_AVX2)
+#if defined __AVX__ && not defined ENABLE_HWY
     if (dynamic_cast<const mdLib::LJFunctorAVX<Particle, shift, mixing, functorN3Modes, globals> *>(&fun)) {
         std::cout << "Using AVX Functor" << std::endl;
         ++identificationHits;
@@ -185,7 +188,7 @@ int main() {
     // choose functor based on available architecture
     // todo this is now hard-coded to have mixing - this should be somewhat more flexible
     ParticlePropertiesLibrary<double, size_t> PPL{cutoff};
-    Functor functor{cutoff, PPL};
+    Functor functor{cutoff/*, PPL*/};
 
     checkFunctorType(functor);
 
@@ -206,8 +209,8 @@ int main() {
 
 
     // define scenario
-    const std::vector<size_t> numParticlesPerCell{1000, 1000};
-    constexpr size_t iterations{1000};
+    const std::vector<size_t> numParticlesPerCell{2000, 2000};
+    constexpr size_t iterations{10000};
     size_t calcsDistTotal{0};
     size_t calcsForceTotal{0};
     // repeat the whole experiment multiple times and average results
