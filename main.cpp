@@ -26,7 +26,7 @@ using Particle = mdLib::MoleculeLJ;
 using Cell = autopas::FullParticleCell<mdLib::MoleculeLJ>;
 // some constants that define the benchmark
 constexpr bool shift{false};
-constexpr bool mixing{false};
+constexpr bool mixing{true};
 constexpr autopas::FunctorN3Modes functorN3Modes{autopas::FunctorN3Modes::Both};
 constexpr bool newton3{true};
 constexpr bool globals{false};
@@ -185,7 +185,7 @@ int main() {
     // choose functor based on available architecture
     // todo this is now hard-coded to have mixing - this should be somewhat more flexible
     ParticlePropertiesLibrary<double, size_t> PPL{cutoff};
-    Functor functor{cutoff};
+    Functor functor{cutoff, PPL};
 
     checkFunctorType(functor);
 
