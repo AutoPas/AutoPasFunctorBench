@@ -111,6 +111,10 @@ void initialization(Functor &functor, std::vector<Cell> &cells, const std::vecto
     // TODO : consider hitRate
 
     timer.at("Initialization").start();
+    // this is a formula determined by regression (based on a mapping from hitrate to div)
+    double div = 2.86*(hitRate*hitRate*hitRate)-4.13*(hitRate*hitRate)+2.81*hitRate+0.42;
+    double cellLength {cutoff/div};
+
     cells[0].reserve(numParticlesPerCell[0]);
     cells[1].reserve(numParticlesPerCell[1]);
     for (size_t cellId = 0; cellId < numParticlesPerCell.size(); ++cellId) {
@@ -118,9 +122,9 @@ void initialization(Functor &functor, std::vector<Cell> &cells, const std::vecto
             Particle p{
                     {
                             // particles are next to each other in X direction
-                            rand() / static_cast<double>(RAND_MAX) * cutoff + cutoff * cellId,
-                            rand() / static_cast<double>(RAND_MAX) * cutoff,
-                            rand() / static_cast<double>(RAND_MAX) * cutoff,
+                            rand() / static_cast<double>(RAND_MAX) * cellLength + cellLength * cellId,
+                            rand() / static_cast<double>(RAND_MAX) * cellLength,
+                            rand() / static_cast<double>(RAND_MAX) * cellLength,
                     },
                     {0., 0., 0.,},
                     // every cell gets its own id space
