@@ -40,6 +40,11 @@ using Functor = mdLib::LJFunctorAVX<Particle, shift, mixing, functorN3Modes, glo
 using Functor = mdLib::LJFunctorSVE<Particle, shift, mixing, functorN3Modes, globals> ;
 #endif
 
+enum FunctorType {
+    pair,
+    single,
+    verlet
+};
 
 void checkFunctorType(const Functor &fun) {
     int identificationHits = 0;
@@ -94,14 +99,17 @@ void printTimer() {
                 << " : "
                 << std::setprecision(3)
                 << std::setw(8)
-                << static_cast<double>(timer[name].getTotalTime()) * 10e-9
+                << static_cast<double>(timer[name].getTotalTime()) * 1e-9
                 << " [s]\n";
     }
 }
 
 void initialization(Functor &functor, std::vector<Cell> &cells, const std::vector<size_t> &numParticlesPerCell,
-                    double cutoff) {
+                    double cutoff, double hitRate) {
     // initialize cells with randomly distributed particles
+
+    // TODO : consider hitRate
+
     timer.at("Initialization").start();
     cells[0].reserve(numParticlesPerCell[0]);
     cells[1].reserve(numParticlesPerCell[1]);
@@ -125,7 +133,7 @@ void initialization(Functor &functor, std::vector<Cell> &cells, const std::vecto
     timer.at("Initialization").stop();
 }
 
-void applyFunctor(Functor &functor, std::vector<Cell> &cells) {
+void applyFunctorPair(Functor &functor, std::vector<Cell> &cells) {
     timer.at("Functor").start();
 #ifdef ENABLE_FAPP
     fapp_start("SoAFunctorPair", 1, 0);
@@ -133,6 +141,30 @@ void applyFunctor(Functor &functor, std::vector<Cell> &cells) {
     functor.SoAFunctorPair(cells[0]._particleSoABuffer, cells[1]._particleSoABuffer, newton3);
 #ifdef ENABLE_FAPP
     fapp_stop("SoAFunctorPair", 1, 0);
+#endif
+    timer.at("Functor").stop();
+}
+
+void applyFunctorSingle(Functor &functor, std::vector<Cell> &cells) {
+        timer.at("Functor").start();
+#ifdef ENABLE_FAPP
+    fapp_start("SoAFunctorSingle", 1, 0);
+#endif
+    functor.SoAFunctorSingle(cells[0]._particleSoABuffer, newton3);
+#ifdef ENABLE_FAPP
+    fapp_stop("SoAFunctorSingle", 1, 0);
+#endif
+    timer.at("Functor").stop();
+}
+
+void applyFunctorVerlet(Functor &functor, std::vector<Cell> &cells) {
+        timer.at("Functor").start();
+#ifdef ENABLE_FAPP
+    fapp_start("SoAFunctorVerlet", 1, 0);
+#endif
+    // TODO : prepare neighbor list
+#ifdef ENABLE_FAPP
+    fapp_stop("SoAFunctorVerlet", 1, 0);
 #endif
     timer.at("Functor").stop();
 }
@@ -177,11 +209,66 @@ std::tuple<size_t, size_t> countInteractions(std::vector<Cell> &cells, double cu
     return {calcsDist, calcsForce};
 }
 
+void printHelp() {
+    std::cout << "Usage: \n"
+        << "./AutoPasFunctorBench <functor type> <iterations> <numParticles> <hit rate> \n"
+        << "Possible values:\n"
+        << "functor type: \"single\", \"pair\", \"verlet\"\n"
+        << "iterations, numParticles: int\n"
+        << "hit rate: double"
+        << std::endl;
+}
+
+std::tuple<FunctorType, size_t, size_t, double> readCliInput(int argc, char* argv[]) {
+
+    FunctorType type = FunctorType::single;
+    size_t iterations {1000};
+    size_t numParticles {1000};
+    double hitRate {0.5};
+
+    if (argc < 5) {
+        printHelp();
+        exit(1);
+    }
+
+    std::vector<std::string> types {"single", "pair", "verlet"};
+
+    if (types[0].compare(argv[1]) == 0) {
+        type = single;
+    }
+    else if (types[1].compare(argv[1]) == 0) {
+        type = pair;
+    }
+    else if (types[2].compare(argv[1]) == 0) {
+        type = verlet;
+    }
+    else {
+        std::cout << "Unkown functor type: " << argv[1] << std::endl;
+        printHelp();
+        exit(1);
+    }
+
+    try {
+        iterations = std::stoi(argv[2]);
+        numParticles = std::stoi(argv[3]);
+        hitRate = std::stod(argv[4]);
+    }
+    catch (std::exception &e) {
+        std::cout << "Could not parse iterations, numParticles or hitRate. Please make sure that the types do match." << std::endl;
+        printHelp();
+        exit(1);
+    }
+
+    return {type, iterations, numParticles, hitRate};
+}
+
 /**
  * Mini benchmark tool to estimate the inner most kernel performance of AutoPas
  * @return
  */
-int main() {
+int main(int argc, char* argv[]) {
+
+    auto [functorType, iterations, numParticles, hitRate] = readCliInput(argc, argv);
 
     constexpr double cutoff{3.}; // is also the cell size
 
@@ -209,20 +296,38 @@ int main() {
 
 
     // define scenario
-    const std::vector<size_t> numParticlesPerCell{2000, 2000};
-    constexpr size_t iterations{10000};
+    const std::vector<size_t> numParticlesPerCell{numParticles, numParticles};
     size_t calcsDistTotal{0};
     size_t calcsForceTotal{0};
     // repeat the whole experiment multiple times and average results
     std::vector<Cell> cells{2};
 
-    initialization(functor, cells, numParticlesPerCell, cutoff);
+    initialization(functor, cells, numParticlesPerCell, cutoff, hitRate);
 
-    for (size_t iteration = 0; iteration < iterations; ++iteration) {
-        // TODO offer option to also test FunctorSingle
-        // actual benchmark
-        applyFunctor(functor, cells);
+    switch (functorType)
+    {
+    case FunctorType::pair:
+        for (size_t iteration = 0; iteration < iterations; ++iteration) {
+            // actual benchmark
+            applyFunctorPair(functor, cells);
+        }
+        break;
+    case FunctorType::single:
+        for (size_t iteration = 0; iteration < iterations; ++iteration) {
+            // actual benchmark
+            applyFunctorSingle(functor, cells);
+        }
+        break;
+    case FunctorType::verlet:
+        for (size_t iteration = 0; iteration < iterations; ++iteration) {
+            // actual benchmark
+            applyFunctorVerlet(functor, cells); // TODO : actual implementation
+        }
+        break;
+    default:
+        throw std::runtime_error("No functor type matched");
     }
+    
     // print particles to CSV for checking and prevent compiler from optimizing everything away.
     csvOutput(functor, cells);
 
@@ -233,9 +338,9 @@ int main() {
 
     // print timer and statistics
     const auto gflops =
-            static_cast<double>(calcsDistTotal * 8 + calcsForceTotal * (newton3 ? 18 : 15)) * 10e-9;
+            static_cast<double>(calcsDistTotal * 8 + calcsForceTotal * (newton3 ? 18 : 15)) * 1e-9;
 //    const auto gflops =
-//            static_cast<double>(calcsDistTotal * 8 + calcsForceTotal * functor.getNumFlopsPerKernelCall()) * 10e-9;
+//            static_cast<double>(calcsDistTotal * 8 + calcsForceTotal * functor.getNumFlopsPerKernelCall()) * 1e-9;
 
     using autopas::utils::ArrayUtils::operator<<;
 
@@ -244,7 +349,7 @@ int main() {
             << "Particels per cell : " << numParticlesPerCell << "\n"
             << "Avgerage hit rate  : " << (static_cast<double>(calcsForceTotal) / calcsDistTotal) << "\n"
             << "GFLOPs             : " << gflops << "\n"
-            << "GFLOPs/sec         : " << (gflops / (timer.at("Functor").getTotalTime() * 10e-9)) << "\n";
+            << "GFLOPs/sec         : " << (gflops / (timer.at("Functor").getTotalTime() * 1e-9)) << "\n";
 
     printTimer();
 }
