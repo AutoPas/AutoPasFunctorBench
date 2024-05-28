@@ -26,7 +26,7 @@ using Particle = mdLib::MoleculeLJ;
 using Cell = autopas::FullParticleCell<mdLib::MoleculeLJ>;
 // some constants that define the benchmark
 constexpr bool shift{false};
-constexpr bool mixing{true};
+constexpr bool mixing{false};
 constexpr autopas::FunctorN3Modes functorN3Modes{autopas::FunctorN3Modes::Both};
 constexpr bool newton3{true};
 constexpr bool globals{false};
@@ -91,7 +91,7 @@ void printTimer() {
                 << " : "
                 << std::setprecision(3)
                 << std::setw(8)
-                << static_cast<double>(timer[name].getTotalTime()) * 10e-9
+                << static_cast<double>(timer[name].getTotalTime()) * 1e-9
                 << " [s]\n";
     }
 }
@@ -185,7 +185,7 @@ int main() {
     // choose functor based on available architecture
     // todo this is now hard-coded to have mixing - this should be somewhat more flexible
     ParticlePropertiesLibrary<double, size_t> PPL{cutoff};
-    Functor functor{cutoff, PPL};
+    Functor functor{cutoff};
 
     checkFunctorType(functor);
 
@@ -206,8 +206,8 @@ int main() {
 
 
     // define scenario
-    const std::vector<size_t> numParticlesPerCell{1000, 1000};
-    constexpr size_t iterations{1000};
+    const std::vector<size_t> numParticlesPerCell{2000, 2000};
+    constexpr size_t iterations{5000};
     size_t calcsDistTotal{0};
     size_t calcsForceTotal{0};
     // repeat the whole experiment multiple times and average results
@@ -230,9 +230,9 @@ int main() {
 
     // print timer and statistics
     const auto gflops =
-            static_cast<double>(calcsDistTotal * 8 + calcsForceTotal * (newton3 ? 18 : 15)) * 10e-9;
+            static_cast<double>(calcsDistTotal * 8 + calcsForceTotal * (newton3 ? 18 : 15)) * 1e-9;
 //    const auto gflops =
-//            static_cast<double>(calcsDistTotal * 8 + calcsForceTotal * functor.getNumFlopsPerKernelCall()) * 10e-9;
+//            static_cast<double>(calcsDistTotal * 8 + calcsForceTotal * functor.getNumFlopsPerKernelCall()) * 1e-9;
 
     using autopas::utils::ArrayUtils::operator<<;
 
@@ -241,7 +241,7 @@ int main() {
             << "Particels per cell : " << numParticlesPerCell << "\n"
             << "Avgerage hit rate  : " << (static_cast<double>(calcsForceTotal) / calcsDistTotal) << "\n"
             << "GFLOPs             : " << gflops << "\n"
-            << "GFLOPs/sec         : " << (gflops / (timer.at("Functor").getTotalTime() * 10e-9)) << "\n";
+            << "GFLOPs/sec         : " << (gflops / (timer.at("Functor").getTotalTime() * 1e-9)) << "\n";
 
     printTimer();
 }
