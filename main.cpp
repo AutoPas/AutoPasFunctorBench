@@ -33,7 +33,7 @@ constexpr bool newton3{true};
 constexpr bool globals{false};
 
 #if defined ENABLE_HWY
-using Functor = mdLib::LJFunctorHWY<Particle, shift, mixing, functorN3Modes, globals>;
+using Functor = mdLib::LJFunctorHWY<Particle, shift, mixing, functorN3Modes, globals, true, VectorizationPattern::p1xVec>;
 #elif __AVX__
 using Functor = mdLib::LJFunctorAVX<Particle, shift, mixing, functorN3Modes, globals>;
 #elif __ARM_FEATURE_SVE
@@ -50,7 +50,7 @@ void checkFunctorType(const Functor &fun) {
     int identificationHits = 0;
 
 #if defined ENABLE_HWY
-    if (dynamic_cast<const mdLib::LJFunctorHWY<Particle, shift, mixing, functorN3Modes, globals> *>(&fun)) {
+    if (dynamic_cast<const mdLib::LJFunctorHWY<Particle, shift, mixing, functorN3Modes, globals, true, VectorizationPattern::p1xVec> *>(&fun)) {
         std::cout << "Using HWY Functor" << std::endl;
         ++identificationHits;
     }
@@ -101,6 +101,12 @@ void printTimer() {
                 << std::setw(8)
                 << static_cast<double>(timer[name].getTotalTime()) * 1e-9
                 << " [s]\n";
+    }
+}
+
+void resetTimer() {
+    for (auto &[_, t]: timer) {
+        t.reset();
     }
 }
 
@@ -215,22 +221,53 @@ std::tuple<size_t, size_t> countInteractions(std::vector<Cell> &cells, double cu
 
 void printHelp() {
     std::cout << "Usage: \n"
-        << "./AutoPasFunctorBench <functor type> <iterations> <numParticles> <hit rate> \n"
+        << "./AutoPasFunctorBench <functor type> <repetitions> <iterations> <numParticles> <hit rate> <outfile>\n"
         << "Possible values:\n"
         << "functor type: \"single\", \"pair\", \"verlet\"\n"
-        << "iterations, numParticles: int\n"
-        << "hit rate: double"
+        << "repetitions, iterations, numParticles: int\n"
+        << "hit rate: double\n"
+        << "outfile: std::string"
         << std::endl;
 }
 
-std::tuple<FunctorType, size_t, size_t, double> readCliInput(int argc, char* argv[]) {
+template <typename T>
+void writeListToJson(const std::vector<T>& data, const std::string fileName) {
+    std::ofstream outFile(fileName);
+    if (outFile.is_open()) {
+        outFile << "{\n  \"times\": [";
+
+        for (size_t i = 0; i < data.size(); ++i) {
+            outFile << data[i];
+            if (i < data.size() - 1) {
+                outFile << ", ";
+            }
+        }
+
+        outFile << "],\n";
+        outFile << "  \"avg\": ";
+
+        T sum = std::accumulate(data.begin(), data.end(), static_cast<T>(0));
+        outFile << (static_cast<double>(sum) / static_cast<double>(data.size()));
+        outFile << "\n}";
+
+        outFile.close();
+        std::cout << "Data successfully saved" << std::endl;
+    } else {
+        std::cerr << "Could not open the file for writing!" << std::endl;
+        exit(1);
+    }
+}
+
+std::tuple<FunctorType, size_t, size_t, size_t, double, std::string> readCliInput(int argc, char* argv[]) {
 
     FunctorType type = FunctorType::single;
+    size_t repetitions {1};
     size_t iterations {1000};
     size_t numParticles {1000};
     double hitRate {0.5};
+    std::string outfile {"benchmark.json"};
 
-    if (argc < 5) {
+    if (argc < 7) {
         printHelp();
         exit(1);
     }
@@ -253,9 +290,11 @@ std::tuple<FunctorType, size_t, size_t, double> readCliInput(int argc, char* arg
     }
 
     try {
-        iterations = std::stoi(argv[2]);
-        numParticles = std::stoi(argv[3]);
-        hitRate = std::stod(argv[4]);
+        repetitions = std::stoi(argv[2]);
+        iterations = std::stoi(argv[3]);
+        numParticles = std::stoi(argv[4]);
+        hitRate = std::stod(argv[5]);
+        outfile = argv[6];
     }
     catch (std::exception &e) {
         std::cout << "Could not parse iterations, numParticles or hitRate. Please make sure that the types do match." << std::endl;
@@ -263,7 +302,7 @@ std::tuple<FunctorType, size_t, size_t, double> readCliInput(int argc, char* arg
         exit(1);
     }
 
-    return {type, iterations, numParticles, hitRate};
+    return {type, repetitions, iterations, numParticles, hitRate, outfile};
 }
 
 /**
@@ -272,88 +311,99 @@ std::tuple<FunctorType, size_t, size_t, double> readCliInput(int argc, char* arg
  */
 int main(int argc, char* argv[]) {
 
-    auto [functorType, iterations, numParticles, hitRate] = readCliInput(argc, argv);
+    auto [functorType, repetitions, iterations, numParticles, hitRate, outfile] = readCliInput(argc, argv);
 
     constexpr double cutoff{3.}; // is also the cell size
 
-    // choose functor based on available architecture
-    // todo this is now hard-coded to have mixing - this should be somewhat more flexible
-    ParticlePropertiesLibrary<double, size_t> PPL{cutoff};
-    Functor functor{cutoff, PPL};
+    std::vector<uint64_t> times {};
+    times.reserve(repetitions);
 
-    checkFunctorType(functor);
+    for (int n = 0; n < repetitions; ++n) {
 
-    // 5 site types to provide some variation (requiring gathering that is somewhat similar to a realistic scenario)
-    if constexpr (mixing) {
-        PPL.addSiteType(0,1.,1.,1.);
-        PPL.addSiteType(1,1.,1.,1.);
-        PPL.addSiteType(2,1.,1.,1.);
-        PPL.addSiteType(3,1.,1.,1.);
-        PPL.addSiteType(4,1.,1.,1.);
-        PPL.calculateMixingCoefficients();
-    } else {
-        constexpr double epsilon24{24.};
-        constexpr double sigmaSquare{1.};
-        functor.setParticleProperties(epsilon24, sigmaSquare);
+        // choose functor based on available architecture
+        // todo this is now hard-coded to have mixing - this should be somewhat more flexible
+        ParticlePropertiesLibrary<double, size_t> PPL{cutoff};
+        Functor functor{cutoff, PPL};
+
+        checkFunctorType(functor);
+
+        // 5 site types to provide some variation (requiring gathering that is somewhat similar to a realistic scenario)
+        if constexpr (mixing) {
+            PPL.addSiteType(0,1.,1.,1.);
+            PPL.addSiteType(1,1.,1.,1.);
+            PPL.addSiteType(2,1.,1.,1.);
+            PPL.addSiteType(3,1.,1.,1.);
+            PPL.addSiteType(4,1.,1.,1.);
+            PPL.calculateMixingCoefficients();
+        } else {
+            constexpr double epsilon24{24.};
+            constexpr double sigmaSquare{1.};
+            functor.setParticleProperties(epsilon24, sigmaSquare);
+        }
+
+
+
+        // define scenario
+        const std::vector<size_t> numParticlesPerCell{numParticles, numParticles};
+        size_t calcsDistTotal{0};
+        size_t calcsForceTotal{0};
+        // repeat the whole experiment multiple times and average results
+        std::vector<Cell> cells{2};
+
+        initialization(functor, cells, numParticlesPerCell, cutoff, hitRate);
+
+        switch (functorType)
+        {
+        case FunctorType::pair:
+            for (size_t iteration = 0; iteration < iterations; ++iteration) {
+                // actual benchmark
+                applyFunctorPair(functor, cells);
+            }
+            break;
+        case FunctorType::single:
+            for (size_t iteration = 0; iteration < iterations; ++iteration) {
+                // actual benchmark
+                applyFunctorSingle(functor, cells);
+            }
+            break;
+        case FunctorType::verlet:
+            for (size_t iteration = 0; iteration < iterations; ++iteration) {
+                // actual benchmark
+                applyFunctorVerlet(functor, cells); // TODO : actual implementation
+            }
+            break;
+        default:
+            throw std::runtime_error("No functor type matched");
+        }
+        
+        // print particles to CSV for checking and prevent compiler from optimizing everything away.
+        csvOutput(functor, cells);
+
+        // gather data for analysis
+        const auto [calcsDist, calcsForce] = countInteractions(cells, cutoff);
+        calcsDistTotal += calcsDist;
+        calcsForceTotal += calcsForce;
+
+        // print timer and statistics
+        const auto gflops =
+                static_cast<double>(calcsDistTotal * 8 + calcsForceTotal * (newton3 ? 18 : 15)) * 1e-9;
+    //    const auto gflops =
+    //            static_cast<double>(calcsDistTotal * 8 + calcsForceTotal * functor.getNumFlopsPerKernelCall()) * 1e-9;
+
+        using autopas::utils::ArrayUtils::operator<<;
+
+        std::cout
+                << "Iterations         : " << iterations << "\n"
+                << "Particels per cell : " << numParticlesPerCell << "\n"
+                << "Avgerage hit rate  : " << (static_cast<double>(calcsForceTotal) / calcsDistTotal) << "\n"
+                << "GFLOPs             : " << gflops << "\n"
+                << "GFLOPs/sec         : " << (gflops / (timer.at("Functor").getTotalTime() * 1e-9)) << "\n";
+
+        printTimer();
+
+        times.push_back(timer["Functor"].getTotalTime());
+        resetTimer();
     }
 
-
-
-    // define scenario
-    const std::vector<size_t> numParticlesPerCell{numParticles, numParticles};
-    size_t calcsDistTotal{0};
-    size_t calcsForceTotal{0};
-    // repeat the whole experiment multiple times and average results
-    std::vector<Cell> cells{2};
-
-    initialization(functor, cells, numParticlesPerCell, cutoff, hitRate);
-
-    switch (functorType)
-    {
-    case FunctorType::pair:
-        for (size_t iteration = 0; iteration < iterations; ++iteration) {
-            // actual benchmark
-            applyFunctorPair(functor, cells);
-        }
-        break;
-    case FunctorType::single:
-        for (size_t iteration = 0; iteration < iterations; ++iteration) {
-            // actual benchmark
-            applyFunctorSingle(functor, cells);
-        }
-        break;
-    case FunctorType::verlet:
-        for (size_t iteration = 0; iteration < iterations; ++iteration) {
-            // actual benchmark
-            applyFunctorVerlet(functor, cells); // TODO : actual implementation
-        }
-        break;
-    default:
-        throw std::runtime_error("No functor type matched");
-    }
-    
-    // print particles to CSV for checking and prevent compiler from optimizing everything away.
-    csvOutput(functor, cells);
-
-    // gather data for analysis
-    const auto [calcsDist, calcsForce] = countInteractions(cells, cutoff);
-    calcsDistTotal += calcsDist;
-    calcsForceTotal += calcsForce;
-
-    // print timer and statistics
-    const auto gflops =
-            static_cast<double>(calcsDistTotal * 8 + calcsForceTotal * (newton3 ? 18 : 15)) * 1e-9;
-//    const auto gflops =
-//            static_cast<double>(calcsDistTotal * 8 + calcsForceTotal * functor.getNumFlopsPerKernelCall()) * 1e-9;
-
-    using autopas::utils::ArrayUtils::operator<<;
-
-    std::cout
-            << "Iterations         : " << iterations << "\n"
-            << "Particels per cell : " << numParticlesPerCell << "\n"
-            << "Avgerage hit rate  : " << (static_cast<double>(calcsForceTotal) / calcsDistTotal) << "\n"
-            << "GFLOPs             : " << gflops << "\n"
-            << "GFLOPs/sec         : " << (gflops / (timer.at("Functor").getTotalTime() * 1e-9)) << "\n";
-
-    printTimer();
+    writeListToJson<uint64_t>(times, outfile);
 }
