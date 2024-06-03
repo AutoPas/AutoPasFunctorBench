@@ -20,6 +20,7 @@
 #include <molecularDynamicsLibrary/MoleculeLJ.h>
 #include <autopas/cells/FullParticleCell.h>
 #include <autopas/utils/Timer.h>
+#include <autopas/utils/ArrayMath.h>
 #include <fstream>
 
 // type aliases for ease of use
@@ -110,16 +111,32 @@ void resetTimer() {
     }
 }
 
-void initialization(Functor &functor, std::vector<Cell> &cells, const std::vector<size_t> &numParticlesPerCell,
-                    double cutoff, double hitRate) {
+void initialization(Functor &functor, FunctorType type, std::vector<Cell> &cells, std::vector<std::vector<size_t, autopas::AlignedAllocator<size_t>>>& neighborLists,
+                    const std::vector<size_t> &numParticlesPerCell, double cutoff, double interactionLengthSquare, double hitRate) {
     // initialize cells with randomly distributed particles
 
-    // TODO : consider hitRate
-
     timer.at("Initialization").start();
-    // this is a formula determined by regression (based on a mapping from hitrate to div)
-    double div = 2.86*(hitRate*hitRate*hitRate)-4.13*(hitRate*hitRate)+2.81*hitRate+0.42;
-    double cellLength {cutoff/div};
+    // TODO : fix this for single and verlet case
+
+    double cellLength = 0.;
+
+    switch (type)
+    {
+    case pair: {
+        // this is a formula determined by regression (based on a mapping from hitrate to div with random sample values)
+        double div = 2.86*(hitRate*hitRate*hitRate)-4.13*(hitRate*hitRate)+2.81*hitRate+0.42;
+        cellLength = cutoff / div;
+        break;
+    }
+    case single: {
+        double div = 2.72*(hitRate*hitRate*hitRate)-4.02*(hitRate*hitRate)+2.47*hitRate+0.09;
+        cellLength = cutoff / div;
+        break;
+    }
+    default:
+        cellLength = cutoff * 2.5; // TODO : Adjust skin size accordingly
+        break;
+    }
 
     cells[0].reserve(numParticlesPerCell[0]);
     cells[1].reserve(numParticlesPerCell[1]);
@@ -140,6 +157,22 @@ void initialization(Functor &functor, std::vector<Cell> &cells, const std::vecto
         }
         functor.SoALoader(cells[cellId], cells[cellId]._particleSoABuffer, 0, false);
     }
+
+    // for verlet lists, only consider first cell
+    for (size_t i = 0; i < numParticlesPerCell[0]; ++i) {
+        for (size_t j = newton3 ? i + 1 : 0; j < numParticlesPerCell[0]; ++j) {
+            if (i == j) {
+                continue;
+            }
+
+            auto dr = autopas::utils::ArrayMath::sub(cells[0][i].getR(), cells[0][j].getR());
+            double dr2 = autopas::utils::ArrayMath::dot(dr, dr);
+            if (dr2 <= interactionLengthSquare) {
+                neighborLists.at(i).push_back(j);
+            }
+        }
+    }
+
     timer.at("Initialization").stop();
 }
 
@@ -167,12 +200,14 @@ void applyFunctorSingle(Functor &functor, std::vector<Cell> &cells) {
     timer.at("Functor").stop();
 }
 
-void applyFunctorVerlet(Functor &functor, std::vector<Cell> &cells) {
+void applyFunctorVerlet(Functor &functor, std::vector<Cell> &cells, const std::vector<std::vector<size_t, autopas::AlignedAllocator<size_t>>> &neighborLists) {
         timer.at("Functor").start();
 #ifdef ENABLE_FAPP
     fapp_start("SoAFunctorVerlet", 1, 0);
 #endif
-    // TODO : prepare neighbor list
+    for (size_t i = 0; i < neighborLists.size(); ++i) {
+        functor.SoAFunctorVerlet(cells[0]._particleSoABuffer, i, neighborLists[i], newton3);
+    }
 #ifdef ENABLE_FAPP
     fapp_stop("SoAFunctorVerlet", 1, 0);
 #endif
@@ -202,19 +237,48 @@ void csvOutput(Functor &functor, std::vector<Cell> &cells) {
     timer.at("Output").stop();
 }
 
-std::tuple<size_t, size_t> countInteractions(std::vector<Cell> &cells, double cutoff) {
+std::tuple<size_t, size_t> countInteractions(std::vector<Cell> &cells, FunctorType type, double cutoff) {
     timer.at("InteractionCounter").start();
     size_t calcsDist{0};
     size_t calcsForce{0};
     const auto cutoffSquared{cutoff * cutoff};
-    for (const auto &p0: cells[0]) {
-        for (const auto &p1: cells[1]) {
-            ++calcsDist;
-            if (distSquared(p0.getR(), p1.getR()) <= cutoffSquared) {
-                ++calcsForce;
+
+    // TODO : differentiate between verlet and lc case
+
+    switch (type)
+    {
+    case pair:
+        for (const auto &p0: cells[0]) {
+            for (const auto &p1: cells[1]) {
+                ++calcsDist;
+                if (distSquared(p0.getR(), p1.getR()) <= cutoffSquared) {
+                    ++calcsForce;
+                }
             }
         }
+        break;
+
+    case single:
+
+        for (const auto &p0: cells[0]) {
+            for (const auto &p1: cells[0]) {
+                ++calcsDist;
+                if (distSquared(p0.getR(), p1.getR()) <= cutoffSquared) {
+                    ++calcsForce;
+                }
+            }
+        }
+        break;
+
+    case verlet:
+        // TODO : implement
+        break;
+    
+    default:
+        break;
     }
+
+    
     timer.at("InteractionCounter").stop();
     return {calcsDist, calcsForce};
 }
@@ -297,7 +361,7 @@ std::tuple<FunctorType, size_t, size_t, size_t, double, std::string> readCliInpu
         outfile = argv[6];
     }
     catch (std::exception &e) {
-        std::cout << "Could not parse iterations, numParticles or hitRate. Please make sure that the types do match." << std::endl;
+        std::cout << "Could not parse repetitions, iterations, numParticles or hitRate. Please make sure that the types do match." << std::endl;
         printHelp();
         exit(1);
     }
@@ -314,6 +378,8 @@ int main(int argc, char* argv[]) {
     auto [functorType, repetitions, iterations, numParticles, hitRate, outfile] = readCliInput(argc, argv);
 
     constexpr double cutoff{3.}; // is also the cell size
+    constexpr double skin{1.};
+    constexpr double interactionLengthSquare{(cutoff + skin) * (cutoff + skin)};
 
     std::vector<uint64_t> times {};
     times.reserve(repetitions);
@@ -341,16 +407,15 @@ int main(int argc, char* argv[]) {
             functor.setParticleProperties(epsilon24, sigmaSquare);
         }
 
-
-
         // define scenario
         const std::vector<size_t> numParticlesPerCell{numParticles, numParticles};
         size_t calcsDistTotal{0};
         size_t calcsForceTotal{0};
         // repeat the whole experiment multiple times and average results
         std::vector<Cell> cells{2};
+        std::vector<std::vector<size_t, autopas::AlignedAllocator<size_t>>> neighborLists (numParticles);
 
-        initialization(functor, cells, numParticlesPerCell, cutoff, hitRate);
+        initialization(functor, functorType, cells, neighborLists, numParticlesPerCell, cutoff, interactionLengthSquare, hitRate);
 
         switch (functorType)
         {
@@ -369,7 +434,7 @@ int main(int argc, char* argv[]) {
         case FunctorType::verlet:
             for (size_t iteration = 0; iteration < iterations; ++iteration) {
                 // actual benchmark
-                applyFunctorVerlet(functor, cells); // TODO : actual implementation
+                applyFunctorVerlet(functor, cells, neighborLists);
             }
             break;
         default:
@@ -380,7 +445,7 @@ int main(int argc, char* argv[]) {
         csvOutput(functor, cells);
 
         // gather data for analysis
-        const auto [calcsDist, calcsForce] = countInteractions(cells, cutoff);
+        const auto [calcsDist, calcsForce] = countInteractions(cells, functorType, cutoff);
         calcsDistTotal += calcsDist;
         calcsForceTotal += calcsForce;
 
