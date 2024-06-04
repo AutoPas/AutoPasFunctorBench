@@ -134,7 +134,7 @@ void initialization(Functor &functor, FunctorType type, std::vector<Cell> &cells
         break;
     }
     default:
-        cellLength = cutoff * 2.5; // TODO : Adjust skin size accordingly
+        cellLength = cutoff * 10; // TODO : Adjust skin size accordingly
         break;
     }
 
@@ -237,13 +237,11 @@ void csvOutput(Functor &functor, std::vector<Cell> &cells) {
     timer.at("Output").stop();
 }
 
-std::tuple<size_t, size_t> countInteractions(std::vector<Cell> &cells, FunctorType type, double cutoff) {
+std::tuple<size_t, size_t> countInteractions(std::vector<Cell> &cells, std::vector<std::vector<size_t, autopas::AlignedAllocator<size_t>>> &neighborLists, FunctorType type, double cutoff) {
     timer.at("InteractionCounter").start();
     size_t calcsDist{0};
     size_t calcsForce{0};
     const auto cutoffSquared{cutoff * cutoff};
-
-    // TODO : differentiate between verlet and lc case
 
     switch (type)
     {
@@ -271,7 +269,18 @@ std::tuple<size_t, size_t> countInteractions(std::vector<Cell> &cells, FunctorTy
         break;
 
     case verlet:
-        // TODO : implement
+
+        for (int i = 0 ; i < neighborLists.size(); ++i) {
+            const auto& p0 = cells[0][i];
+
+            for (const auto& p1 : neighborLists[i]) {
+                ++calcsDist;
+                if (distSquared(p0.getR(), cells[0][p1].getR()) <= cutoffSquared) {
+                    ++calcsForce;
+                }
+            }
+        }
+
         break;
     
     default:
@@ -377,9 +386,9 @@ int main(int argc, char* argv[]) {
 
     auto [functorType, repetitions, iterations, numParticles, hitRate, outfile] = readCliInput(argc, argv);
 
-    constexpr double cutoff{3.}; // is also the cell size
-    constexpr double skin{1.};
-    constexpr double interactionLengthSquare{(cutoff + skin) * (cutoff + skin)};
+    const double cutoff{3.}; // is also the cell size
+    const double skin{std::pow(1./hitRate, 1./3.)};
+    const double interactionLengthSquare{(cutoff * skin) * (cutoff * skin)};
 
     std::vector<uint64_t> times {};
     times.reserve(repetitions);
@@ -445,7 +454,7 @@ int main(int argc, char* argv[]) {
         csvOutput(functor, cells);
 
         // gather data for analysis
-        const auto [calcsDist, calcsForce] = countInteractions(cells, functorType, cutoff);
+        const auto [calcsDist, calcsForce] = countInteractions(cells, neighborLists, functorType, cutoff);
         calcsDistTotal += calcsDist;
         calcsForceTotal += calcsForce;
 
