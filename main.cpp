@@ -116,7 +116,6 @@ void initialization(Functor &functor, FunctorType type, std::vector<Cell> &cells
     // initialize cells with randomly distributed particles
 
     timer.at("Initialization").start();
-    // TODO : fix this for single and verlet case
 
     double cellLength = 0.;
 
@@ -134,7 +133,7 @@ void initialization(Functor &functor, FunctorType type, std::vector<Cell> &cells
         break;
     }
     default:
-        cellLength = cutoff * 10; // TODO : Adjust skin size accordingly
+        cellLength = cutoff * 10;
         break;
     }
 
