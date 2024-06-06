@@ -13,6 +13,14 @@ option(FORCE_AVX2 "Forcibly downgrades functor to AVX2, even if on machine with 
 
 option(ENABLE_HWY "Activates HWY functor" ON)
 
+option(ENABLE_XSIMD "Activates XSIMD functor" ON)
+
+option(ENABLE_SIMDe "Activates SIMDe functor" ON)
+
+option(ENABLE_MIPP "Activates MIPP functor" ON)
+
+option(ENABLE_AUTOVEC "Activates Autovec functor" ON)
+
 add_executable(AutoPasFunctorBench main.cpp)
 target_link_libraries(AutoPasFunctorBench
         PUBLIC
@@ -24,4 +32,8 @@ target_compile_definitions(AutoPasFunctorBench
         $<$<BOOL:${ENABLE_FAPP}>:ENABLE_FAPP>
         $<$<BOOL:${FORCE_AVX2}>:FORCE_AVX2>
         $<$<BOOL:${ENABLE_HWY}>:ENABLE_HWY>
+        $<$<BOOL:${ENABLE_XSIMD}>:ENABLE_XSIMD>
+        $<$<BOOL:${ENABLE_SIMDe}>:ENABLE_SIMDe>
+        $<$<BOOL:${ENABLE_MIPP}>:ENABLE_MIPP>
+        $<$<BOOL:${ENABLE_AUTOVEC}>:ENABLE_AUTOVEC>
         )

@@ -8,6 +8,14 @@
 
 #if defined ENABLE_HWY
 #include <molecularDynamicsLibrary/LJFunctorHWY.h>
+#elif defined ENABLE_XSIMD
+#include <molecularDynamicsLibrary/LJFunctorXSIMD.h>
+#elif defined ENABLE_SIMDe
+#include <molecularDynamicsLibrary/LJFunctorSIMDe.h>
+#elif defined ENABLE_MIPP
+#include <molecularDynamicsLibrary/LJFunctorMIPP.h>
+#elif defined ENABLE_AUTOVEC
+#include <molecularDynamicsLibrary/LJFunctor.h>
 #elif defined __AVX__
 #include <molecularDynamicsLibrary/LJFunctorAVX.h>
 #elif __ARM_FEATURE_SVE
@@ -35,6 +43,14 @@ constexpr bool globals{false};
 
 #if defined ENABLE_HWY
 using Functor = mdLib::LJFunctorHWY<Particle, shift, mixing, functorN3Modes, globals, true, VectorizationPattern::p1xVec>;
+#elif defined ENABLE_XSIMD
+using Functor = mdLib::LJFunctorXSIMD<Particle, shift, mixing, functorN3Modes, globals>;
+#elif defined ENABLE_SIMDe
+using Functor = mdLib::LJFunctorSIMDe<Particle, shift, mixing, functorN3Modes, globals>;
+#elif defined ENABLE_MIPP
+using Functor = mdLib::LJFunctorMIPP<Particle, shift, mixing, functorN3Modes, globals>;
+#elif defined ENABLE_AUTOVEC
+using Functor = mdLib::LJFunctor<Particle, shift, mixing, functorN3Modes, globals>;
 #elif __AVX__
 using Functor = mdLib::LJFunctorAVX<Particle, shift, mixing, functorN3Modes, globals>;
 #elif __ARM_FEATURE_SVE
@@ -55,15 +71,32 @@ void checkFunctorType(const Functor &fun) {
         std::cout << "Using HWY Functor" << std::endl;
         ++identificationHits;
     }
-#endif
-
-#if defined __AVX__ && not defined ENABLE_HWY
+#elif defined ENABLE_XSIMD
+    if (dynamic_cast<const mdLib::LJFunctorXSIMD<Particle, shift, mixing, functorN3Modes, globals> *>(&fun)) {
+        std::cout << "Using XSIMD Functor" << std::endl;
+        ++identificationHits;
+    }
+#elif defined ENABLE_SIMDe
+    if (dynamic_cast<const mdLib::LJFunctorSIMDe<Particle, shift, mixing, functorN3Modes, globals> *>(&fun)) {
+        std::cout << "Using SIMDe Functor" << std::endl;
+        ++identificationHits;
+    }
+#elif defined ENABLE_MIPP
+    if (dynamic_cast<const mdLib::LJFunctorMIPP<Particle, shift, mixing, functorN3Modes, globals> *>(&fun)) {
+        std::cout << "Using MIPP Functor" << std::endl;
+        ++identificationHits;
+    }
+#elif defined ENABLE_AUTOVEC
+    if (dynamic_cast<const mdLib::LJFunctor<Particle, shift, mixing, functorN3Modes, globals> *>(&fun)) {
+        std::cout << "Using Autovec Functor" << std::endl;
+        ++identificationHits;
+    }
+#elif defined __AVX__
     if (dynamic_cast<const mdLib::LJFunctorAVX<Particle, shift, mixing, functorN3Modes, globals> *>(&fun)) {
         std::cout << "Using AVX Functor" << std::endl;
         ++identificationHits;
     }
-#endif
-#ifdef __ARM_FEATURE_SVE
+#elif defined __ARM_FEATURE_SVE
     if (dynamic_cast<const autopas::LJFunctorSVE<Particle, shift, mixing, functorN3Modes, globals> *>(&fun)) {
         std::cout << "Using SVE Functor" << std::endl;
         ++identificationHits;
