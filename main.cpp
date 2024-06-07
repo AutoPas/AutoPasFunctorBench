@@ -102,6 +102,12 @@ void printTimer() {
     }
 }
 
+void resetTimer() {
+    for (auto &[_, t]: timer) {
+        t.reset();
+    }
+}
+
 void initialization(Functor &functor, FunctorType type, std::vector<Cell> &cells, std::vector<std::vector<size_t, autopas::AlignedAllocator<size_t>>>& neighborLists,
                     const std::vector<size_t> &numParticlesPerCell, double cutoff, double interactionLengthSquare, double hitRate) {
     // initialize cells with randomly distributed particles
@@ -464,6 +470,8 @@ int main(int argc, char* argv[]) {
             << "GFLOPs/sec         : " << (gflops / (timer.at("Functor").getTotalTime() * 1e-9)) << "\n";
 
     printTimer();
+    times.push_back(timer["Functor"].getTotalTime());
+    resetTimer();
     }
 }
 
