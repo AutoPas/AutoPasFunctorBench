@@ -13,7 +13,7 @@ endif ()
 FetchContent_Declare(
         autopasfetch
         GIT_REPOSITORY ${autopasRepoPath}
-        GIT_TAG highway-prototyping
+        GIT_TAG highway-clone
 )
 # Populate dependency
 FetchContent_MakeAvailable(autopasfetch)
