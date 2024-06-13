@@ -1,29 +1,7 @@
 #include <iostream>
 
-#ifdef ENABLE_FAPP
-#include "fj_tool/fapp.h"
-#endif
 
-// clang-format off
-
-#if defined ENABLE_HWY
-#include <molecularDynamicsLibrary/LJFunctorHWY.h>
-#elif defined ENABLE_XSIMD
-#include <molecularDynamicsLibrary/LJFunctorXSIMD.h>
-#elif defined ENABLE_SIMDe
-#include <molecularDynamicsLibrary/LJFunctorSIMDe.h>
-#elif defined ENABLE_MIPP
-#include <molecularDynamicsLibrary/LJFunctorMIPP.h>
-#elif defined ENABLE_AUTOVEC
-#include <molecularDynamicsLibrary/LJFunctor.h>
-#elif defined __AVX__
-#include <molecularDynamicsLibrary/LJFunctorAVX.h>
-#elif __ARM_FEATURE_SVE
-#include <molecularDynamicsLibrary/LJFunctorSVE.h>
-#else
-#error "Platform supports neither AVX nor ARM!"
-#endif
-// clang-format on
+#include <molecularDynamicsLibrary/KryptonPairFunctor.h>
 
 #include <molecularDynamicsLibrary/MoleculeLJ.h>
 #include <autopas/cells/FullParticleCell.h>
@@ -36,79 +14,23 @@ using Particle = mdLib::MoleculeLJ;
 using Cell = autopas::FullParticleCell<mdLib::MoleculeLJ>;
 // some constants that define the benchmark
 constexpr bool shift{false};
-constexpr bool mixing{true};
+constexpr bool mixing{false};
 constexpr autopas::FunctorN3Modes functorN3Modes{autopas::FunctorN3Modes::Both};
 constexpr bool newton3{true};
-constexpr bool globals{false};
-
-#if defined ENABLE_HWY
-using Functor = mdLib::LJFunctorHWY<Particle, shift, mixing, functorN3Modes, globals, true, VectorizationPattern::p1xVec>;
-#elif defined ENABLE_XSIMD
-using Functor = mdLib::LJFunctorXSIMD<Particle, shift, mixing, functorN3Modes, globals>;
-#elif defined ENABLE_SIMDe
-using Functor = mdLib::LJFunctorSIMDe<Particle, shift, mixing, functorN3Modes, globals>;
-#elif defined ENABLE_MIPP
-using Functor = mdLib::LJFunctorMIPP<Particle, shift, mixing, functorN3Modes, globals>;
-#elif defined ENABLE_AUTOVEC
-using Functor = mdLib::LJFunctor<Particle, shift, mixing, functorN3Modes, globals>;
-#elif __AVX__
-using Functor = mdLib::LJFunctorAVX<Particle, shift, mixing, functorN3Modes, globals>;
-#elif __ARM_FEATURE_SVE
-using Functor = mdLib::LJFunctorSVE<Particle, shift, mixing, functorN3Modes, globals> ;
-#endif
+constexpr bool globals{true};
 
 enum FunctorType {
+    aos,
     pair,
     single,
     verlet
 };
 
+using Functor = mdLib::KryptonPairFunctor<Particle, functorN3Modes, globals>;
+
 void checkFunctorType(const Functor &fun) {
     int identificationHits = 0;
-
-#if defined ENABLE_HWY
-    if (dynamic_cast<const mdLib::LJFunctorHWY<Particle, shift, mixing, functorN3Modes, globals, true, VectorizationPattern::p1xVec> *>(&fun)) {
-        std::cout << "Using HWY Functor" << std::endl;
-        ++identificationHits;
     }
-#elif defined ENABLE_XSIMD
-    if (dynamic_cast<const mdLib::LJFunctorXSIMD<Particle, shift, mixing, functorN3Modes, globals> *>(&fun)) {
-        std::cout << "Using XSIMD Functor" << std::endl;
-        ++identificationHits;
-    }
-#elif defined ENABLE_SIMDe
-    if (dynamic_cast<const mdLib::LJFunctorSIMDe<Particle, shift, mixing, functorN3Modes, globals> *>(&fun)) {
-        std::cout << "Using SIMDe Functor" << std::endl;
-        ++identificationHits;
-    }
-#elif defined ENABLE_MIPP
-    if (dynamic_cast<const mdLib::LJFunctorMIPP<Particle, shift, mixing, functorN3Modes, globals> *>(&fun)) {
-        std::cout << "Using MIPP Functor" << std::endl;
-        ++identificationHits;
-    }
-#elif defined ENABLE_AUTOVEC
-    if (dynamic_cast<const mdLib::LJFunctor<Particle, shift, mixing, functorN3Modes, globals> *>(&fun)) {
-        std::cout << "Using Autovec Functor" << std::endl;
-        ++identificationHits;
-    }
-#elif defined __AVX__
-    if (dynamic_cast<const mdLib::LJFunctorAVX<Particle, shift, mixing, functorN3Modes, globals> *>(&fun)) {
-        std::cout << "Using AVX Functor" << std::endl;
-        ++identificationHits;
-    }
-#elif defined __ARM_FEATURE_SVE
-    if (dynamic_cast<const autopas::LJFunctorSVE<Particle, shift, mixing, functorN3Modes, globals> *>(&fun)) {
-        std::cout << "Using SVE Functor" << std::endl;
-        ++identificationHits;
-    }
-#endif
-    if (identificationHits != 1) {
-        throw std::runtime_error(
-                "checkFunctorType matched "
-                + std::to_string(identificationHits)
-                + " types! There should only be one match.");
-    }
-}
 
 double distSquared(std::array<double, 3> a, std::array<double, 3> b) {
     using autopas::utils::ArrayMath::sub;
@@ -154,6 +76,12 @@ void initialization(Functor &functor, FunctorType type, std::vector<Cell> &cells
 
     switch (type)
     {
+    case aos: {
+        // this is a formula determined by regression (based on a mapping from hitrate to div with random sample values)
+        double div = 2.86*(hitRate*hitRate*hitRate)-4.13*(hitRate*hitRate)+2.81*hitRate+0.42;
+        cellLength = cutoff / div;
+        break;
+    }
     case pair: {
         // this is a formula determined by regression (based on a mapping from hitrate to div with random sample values)
         double div = 2.86*(hitRate*hitRate*hitRate)-4.13*(hitRate*hitRate)+2.81*hitRate+0.42;
@@ -187,7 +115,6 @@ void initialization(Functor &functor, FunctorType type, std::vector<Cell> &cells
                     particleId % 5};
             cells[cellId].addParticle(p);
         }
-        functor.SoALoader(cells[cellId], cells[cellId]._particleSoABuffer, 0, false);
     }
 
     // for verlet lists, only consider first cell
@@ -208,41 +135,32 @@ void initialization(Functor &functor, FunctorType type, std::vector<Cell> &cells
     timer.at("Initialization").stop();
 }
 
+void applyFunctorAoS(Functor &functor, std::vector<Cell> &cells) {
+    timer.at("Functor").start();
+    for (auto &p1 : cells[0]) {
+        for (auto &p2 : cells[1]) {
+            functor.AoSFunctor(p1, p2, newton3);
+        }
+    }
+    timer.at("Functor").stop();
+}
 void applyFunctorPair(Functor &functor, std::vector<Cell> &cells) {
     timer.at("Functor").start();
-#ifdef ENABLE_FAPP
-    fapp_start("SoAFunctorPair", 1, 0);
-#endif
-    functor.SoAFunctorPair(cells[0]._particleSoABuffer, cells[1]._particleSoABuffer, newton3);
-#ifdef ENABLE_FAPP
-    fapp_stop("SoAFunctorPair", 1, 0);
-#endif
+//    functor.SoAFunctorPair(cells[0]._particleSoABuffer, cells[1]._particleSoABuffer, newton3);
     timer.at("Functor").stop();
 }
 
 void applyFunctorSingle(Functor &functor, std::vector<Cell> &cells) {
-        timer.at("Functor").start();
-#ifdef ENABLE_FAPP
-    fapp_start("SoAFunctorSingle", 1, 0);
-#endif
-    functor.SoAFunctorSingle(cells[0]._particleSoABuffer, newton3);
-#ifdef ENABLE_FAPP
-    fapp_stop("SoAFunctorSingle", 1, 0);
-#endif
+    timer.at("Functor").start();
+//    functor.SoAFunctorSingle(cells[0]._particleSoABuffer, newton3);
     timer.at("Functor").stop();
 }
 
 void applyFunctorVerlet(Functor &functor, std::vector<Cell> &cells, const std::vector<std::vector<size_t, autopas::AlignedAllocator<size_t>>> &neighborLists) {
-        timer.at("Functor").start();
-#ifdef ENABLE_FAPP
-    fapp_start("SoAFunctorVerlet", 1, 0);
-#endif
+    timer.at("Functor").start();
     for (size_t i = 0; i < neighborLists.size(); ++i) {
         functor.SoAFunctorVerlet(cells[0]._particleSoABuffer, i, neighborLists[i], newton3);
     }
-#ifdef ENABLE_FAPP
-    fapp_stop("SoAFunctorVerlet", 1, 0);
-#endif
     timer.at("Functor").stop();
 }
 
@@ -254,7 +172,7 @@ void csvOutput(Functor &functor, std::vector<Cell> &cells) {
     }
     csvFile << "CellId,ParticleId,rX,rY,rZ,fX,fY,fZ\n";
     for (size_t cellId = 0; cellId < cells.size(); ++cellId) {
-        functor.SoAExtractor(cells[cellId], cells[cellId]._particleSoABuffer, 0);
+//        functor.SoAExtractor(cells[cellId], cells[cellId]._particleSoABuffer, 0);
         for (size_t particleId = 0; particleId < cells[cellId].getNumberOfParticles(autopas::IteratorBehavior::owned); ++particleId) {
             const auto &p = cells[cellId][particleId];
             using autopas::utils::ArrayUtils::to_string;
@@ -277,6 +195,17 @@ std::tuple<size_t, size_t> countInteractions(std::vector<Cell> &cells, std::vect
 
     switch (type)
     {
+    case aos:
+        for (const auto &p0: cells[0]) {
+            for (const auto &p1: cells[1]) {
+                ++calcsDist;
+                if (distSquared(p0.getR(), p1.getR()) <= cutoffSquared) {
+                    ++calcsForce;
+                }
+            }
+        }
+        break;
+
     case pair:
         for (const auto &p0: cells[0]) {
             for (const auto &p1: cells[1]) {
@@ -328,7 +257,7 @@ void printHelp() {
     std::cout << "Usage: \n"
         << "./AutoPasFunctorBench <functor type> <repetitions> <iterations> <numParticles> <hit rate> <outfile>\n"
         << "Possible values:\n"
-        << "functor type: \"single\", \"pair\", \"verlet\"\n"
+        << "functor type: \"aos\", \"single\", \"pair\", \"verlet\"\n"
         << "repetitions, iterations, numParticles: int\n"
         << "hit rate: double\n"
         << "outfile: std::string"
@@ -365,7 +294,7 @@ void writeListToJson(const std::vector<T>& data, const std::string fileName) {
 
 std::tuple<FunctorType, size_t, size_t, size_t, double, std::string> readCliInput(int argc, char* argv[]) {
 
-    FunctorType type = FunctorType::single;
+    FunctorType type = FunctorType::aos;
     size_t repetitions {1};
     size_t iterations {1000};
     size_t numParticles {1000};
@@ -377,15 +306,17 @@ std::tuple<FunctorType, size_t, size_t, size_t, double, std::string> readCliInpu
         exit(1);
     }
 
-    std::vector<std::string> types {"single", "pair", "verlet"};
-
+    std::vector<std::string> types {"aos", "single", "pair", "verlet"};
     if (types[0].compare(argv[1]) == 0) {
-        type = single;
+        type = aos;
     }
     else if (types[1].compare(argv[1]) == 0) {
-        type = pair;
+        type = single;
     }
     else if (types[2].compare(argv[1]) == 0) {
+        type = pair;
+    }
+    else if (types[3].compare(argv[1]) == 0) {
         type = verlet;
     }
     else {
@@ -427,26 +358,9 @@ int main(int argc, char* argv[]) {
 
     for (int n = 0; n < repetitions; ++n) {
 
-        // choose functor based on available architecture
-        // todo this is now hard-coded to have mixing - this should be somewhat more flexible
-        ParticlePropertiesLibrary<double, size_t> PPL{cutoff};
-        Functor functor{cutoff, PPL};
-
+        // choose functor
+        Functor functor{cutoff};
         checkFunctorType(functor);
-
-        // 5 site types to provide some variation (requiring gathering that is somewhat similar to a realistic scenario)
-        if constexpr (mixing) {
-            PPL.addSiteType(0,1.,1.,1.);
-            PPL.addSiteType(1,1.,1.,1.);
-            PPL.addSiteType(2,1.,1.,1.);
-            PPL.addSiteType(3,1.,1.,1.);
-            PPL.addSiteType(4,1.,1.,1.);
-            PPL.calculateMixingCoefficients();
-        } else {
-            constexpr double epsilon24{24.};
-            constexpr double sigmaSquare{1.};
-            functor.setParticleProperties(epsilon24, sigmaSquare);
-        }
 
         // define scenario
         const std::vector<size_t> numParticlesPerCell{numParticles, numParticles};
@@ -460,6 +374,12 @@ int main(int argc, char* argv[]) {
 
         switch (functorType)
         {
+        case FunctorType::aos:
+            for (size_t iteration = 0; iteration < iterations; ++iteration) {
+                // actual benchmark
+                applyFunctorAoS(functor, cells);
+            }
+            break;
         case FunctorType::pair:
             for (size_t iteration = 0; iteration < iterations; ++iteration) {
                 // actual benchmark
@@ -508,6 +428,7 @@ int main(int argc, char* argv[]) {
         printTimer();
 
         times.push_back(timer["Functor"].getTotalTime());
+        std::cout << "-----------------------------------" << "\n";
         resetTimer();
     }
 
