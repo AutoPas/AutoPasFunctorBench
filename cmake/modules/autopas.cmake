@@ -13,7 +13,7 @@ endif ()
 FetchContent_Declare(
         autopasfetch
         GIT_REPOSITORY ${autopasRepoPath}
-        GIT_TAG 2bodyKrypton    # Name of the branch with functor to test
+        GIT_TAG AbInitioArgonPotential    # Name of the branch with functor to test
 )
 # Populate dependency
 FetchContent_MakeAvailable(autopasfetch)
