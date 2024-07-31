@@ -2,13 +2,14 @@
 
 #include <molecularDynamicsLibrary/ArgonInclude/RepulsiveTerm.h>
 #include <molecularDynamicsLibrary/ArgonInclude/DispersionTerm.h>
+#include <molecularDynamicsLibrary/ArgonInclude/CosineHandle.h>
 
 #include <autopas/cells/FullParticleCell.h>
 #include <autopas/utils/ArrayMath.h>
 #include <fstream>
 
 //SI units (nm and K)
-static constexpr std::array<long double, 23> A{
+static constexpr std::array<double, 23> A{
         {-5.39365445993314E+05,  // 000
          -1.00043526760807E+07,  // 001
          -1.80479894697093E+10,  // 011
@@ -34,7 +35,7 @@ static constexpr std::array<long double, 23> A{
          -2.83863618111236E+10}  // 006
 };
 
-static constexpr std::array<long double, 23> alpha{
+static constexpr std::array<double, 23> alpha{
         {8.09052299484753E+00,  // 000
          9.52298731190775E+00,  // 001
          1.97867044131258E+01,  // 011
@@ -101,17 +102,18 @@ int main(int argc, char *argv[]) {
     };
 
     // equilateral triangle
-    /*std::array<double, 3> positionI_unit{{0, 0, 0}};
+    std::array<double, 3> positionI_unit{{0, 0, 0}};
     std::array<double, 3> positionJ_unit{{0, 1, 0}};
-    std::array<double, 3> positionK_unit{{std::sqrt(3) / 2, 0.5, 0}};*/
+    std::array<double, 3> positionK_unit{{std::sqrt(3) / 2, 0.5, 0}};
 
     // symmetric linear geometry
-    std::array<double, 3> positionI_unit{{0, 0, 0}};
+    /*std::array<double, 3> positionI_unit{{0, 0, 0}};
     std::array<double, 3> positionJ_unit{{1, 0, 0}};
-    std::array<double, 3> positionK_unit{{2, 0, 0}};
+    std::array<double, 3> positionK_unit{{2, 0, 0}};*/
 
     // Open the file
-    std::ofstream file("/Users/irene/TUM/thesis/AutoPas_Thesis/AutoPasFunctorBench/ArgonPotential_LinearGeometry.csv");
+    std::ofstream file("/Users/irene/TUM/thesis/AutoPas_Thesis/AutoPasFunctorBench/ArgonForce_EquilateralGeometry.csv");
+    //std::ofstream file("/Users/irene/TUM/thesis/AutoPas_Thesis/AutoPasFunctorBench/Cosine_EquilateralGeometry.csv");
 
     // Check if the file is opened successfully
     if (!file.is_open()) {
@@ -120,7 +122,11 @@ int main(int argc, char *argv[]) {
     }
 
     // Write headers
-    file << "Distance [nm],Potential [K],Dispersion Potential [K],Repulsive Potential [K]" << std::endl;
+    file << "Distance,ForceI,ForceI_x,ForceI_y,ForceI_z,ForceI_disp,ForceI_disp_x,ForceI_disp_y,ForceI_disp_z,ForceI_rep,ForceI_rep_x,ForceI_rep_y,ForceI_rep_z" <<std::endl;
+    //file << "Distance,Potential,DispersivePotential,RepulsivePotential" << std::endl;
+
+    //file << "R1,fct,dfct_dr1_x,dfct_dr1_y,dfct_dr1_z" << std::endl;
+
 
     const double R_min = .3;
     const double R_max = 1;
@@ -131,28 +137,46 @@ int main(int argc, char *argv[]) {
         auto positionJ = autopas::utils::ArrayMath::rescale_array(positionJ_unit, r);
         auto positionK = autopas::utils::ArrayMath::rescale_array(positionK_unit, r);
 
-        auto displacementHandleIJ = DisplacementHandle(positionI, positionJ, I, J);
-        auto displacementHandleJK = DisplacementHandle(positionJ, positionK, J, K);
-        auto displacementHandleKI = DisplacementHandle(positionK, positionI, K, I);
+        const auto displacementHandleIJ = DisplacementHandle(positionI, positionJ, I, J);
+        const auto displacementHandleJK = DisplacementHandle(positionJ, positionK, J, K);
+        const auto displacementHandleKI = DisplacementHandle(positionK, positionI, K, I);
 
         const auto dispersionPotential = U_dispersive(Z, beta, displacementHandleIJ, displacementHandleJK,
                                                       displacementHandleKI);
         const auto repulsivePotential = U_repulsive(A, alpha, displacementHandleIJ, displacementHandleJK,
                                                     displacementHandleKI);
-        const auto totalPotential = dispersionPotential + repulsivePotential;
+        [[maybe_unused]] const auto totalPotential = dispersionPotential + repulsivePotential;
 
-        /*const auto dispersiveForceI = autopas::utils::ArrayMath::Argon::F_dispersive<I>(Z, beta, displacementHandleIJ, displacementHandleJK,
+        // Force on particle I
+        const auto dispersiveForceI = F_dispersive<I>(Z, beta, displacementHandleIJ, displacementHandleJK,
                                                       displacementHandleKI);
-        const auto repulsiveForceI = autopas::utils::ArrayMath::Argon::F_repulsive<I>(A, alpha, displacementHandleIJ, displacementHandleJK,
+        const auto repulsiveForceI = F_repulsive<I>(A, alpha, displacementHandleIJ, displacementHandleJK,
                                                     displacementHandleKI);
-        const auto totalForceI = autopas::utils::ArrayMath::sum_arrays(dispersiveForceI, repulsiveForceI);*/
-        // std::cout << "Distance,   " << distance << std::endl;
-        // std::cout << "Force,      " << force[0] << std::endl;
-        // std::cout << "Potential Energy:" << epot << std::endl;
+        const auto totalForceI = autopas::utils::ArrayMath::sum_arrays(dispersiveForceI, repulsiveForceI);
+
+       /* // Force on particle J
+        const auto dispersiveForceJ = F_dispersive<J>(Z, beta, displacementHandleIJ, displacementHandleJK,
+                                                     displacementHandleKI);
+        const auto repulsiveForceJ = F_repulsive<J>(A, alpha, displacementHandleIJ, displacementHandleJK,
+                                                    displacementHandleKI);
+        const auto totalForceJ = autopas::utils::ArrayMath::sum_arrays(dispersiveForceJ, repulsiveForceJ);
+
+        // Force on particle K
+        const auto dispersiveForceK = F_dispersive<K>(Z, beta, displacementHandleIJ, displacementHandleJK,
+                                                     displacementHandleKI);
+        const auto repulsiveForceK = F_repulsive<K>(A, alpha, displacementHandleIJ, displacementHandleJK,
+                                                    displacementHandleKI);
+        const auto totalForceK = autopas::utils::ArrayMath::sum_arrays(dispersiveForceK, repulsiveForceK);*/
 
         // Write to CSV
-        file << std::fixed << std::setprecision(15) << r << "," << totalPotential << ","
-             << dispersionPotential << ',' << repulsivePotential << std::endl;
+        file << std::fixed << std::setprecision(15) << r << ","
+        << autopas::utils::ArrayMath::L2Norm(totalForceI) << "," << totalForceI[0] << "," << totalForceI[1] << "," << totalForceI[2] << ","
+        << autopas::utils::ArrayMath::L2Norm(dispersiveForceI) << "," << dispersiveForceI[0] << "," << dispersiveForceI[1] << "," << dispersiveForceI[2] << ","
+        << autopas::utils::ArrayMath::L2Norm(repulsiveForceI) << "," << repulsiveForceI[0] << "," << repulsiveForceI[1] << "," << repulsiveForceI[2] << ","
+        << std::endl;
+
+        /*file << std::fixed << std::setprecision(15) << r << ","<< totalPotential  << "," << dispersionPotential
+        << "," << repulsivePotential <<  std::endl;*/
     }
 
     file.close();
