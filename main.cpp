@@ -35,7 +35,7 @@ int main(int argc, char* argv[]) {
     auto particle3 = Particle({0., 0., 0.}, {0., 0., 0.}, 0, 0);
 
     // Open the file
-    std::ofstream file("../AxilrodTeller/EquilateralGeometry.csv");
+    std::ofstream file("AxilrodTeller/EquilateralGeometry.csv");
 
     // Check if the file is opened successfully
     if (!file.is_open()) {
