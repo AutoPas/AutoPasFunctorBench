@@ -28,14 +28,15 @@ int main(int argc, char* argv[]) {
 
     const double cutoff{300.};
     Functor functor{cutoff};
+    // set nu
     functor.setParticleProperties(1.6152500E-3);
 
     auto particle1 = Particle({0., 0., 0.}, {0., 0., 0.}, 0, 0);
-    auto particle2 = Particle({0., 0., 0.}, {0., 0., 0.}, 0, 0);
-    auto particle3 = Particle({0., 0., 0.}, {0., 0., 0.}, 0, 0);
+    auto particle2 = Particle({1., 1., 0.}, {0., 0., 0.}, 0, 0);
+    auto particle3 = Particle({1., -1., 0.}, {0., 0., 0.}, 0, 0);
 
     // Open the file
-    std::ofstream file("AxilrodTeller/EquilateralGeometry.csv");
+    std::ofstream file("../AxilrodTeller/Particle1AlongX.csv");
 
     // Check if the file is opened successfully
     if (!file.is_open()) {
@@ -44,19 +45,20 @@ int main(int argc, char* argv[]) {
     }
 
     // Write headers
-    file << "Distance,Energy,Force_x,Force_y,Force_z" << std::endl;
+    file << "Xposition,Energy,Force_x,Force_y,Force_z" << std::endl;
 
     double epot{};
-    size_t resolution = 1000;
+    size_t resolution = 2000;
     double increment = 0.001;
-    double distance = 0.3;
+    double distance = 0.;
     for (auto i = 0; i < resolution; i++) {
-        // move second particle
+        distance += increment;
+        //move first particle along x axis
+        particle1.setR({distance, 0., 0});
+        // set Forces to 0
+        particle1.setF({0.,0.,0.});
         particle2.setF({0.,0.,0.});
-        particle2.setR({0., distance, 0.});
-        // move third particle
         particle3.setF({0.,0.,0.});
-        particle3.setR({std::sqrt(3)/2 * distance, 0.5 * distance, 0.});
         // Compute the interactions
         functor.initTraversal();
         functor.AoSFunctor(particle1, particle2, particle3, newton3);
@@ -65,13 +67,8 @@ int main(int argc, char* argv[]) {
         auto force = particle1.getF();
         epot = functor.getPotentialEnergy();
 
-        // std::cout << "Distance,   " << distance << std::endl;
-        // std::cout << "Force,      " << force[0] << std::endl;
-        // std::cout << "Potential Energy:" << epot << std::endl;
-
         // Write to CSV
         file << std::fixed << std::setprecision(15) << distance << "," << epot << "," << force[0] << "," << force[1] << "," << force[2]  << std::endl;
-        distance += increment;
     }
 
     file.close();
