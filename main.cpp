@@ -101,9 +101,9 @@ int main(int argc, char *argv[]) {
     };
 
     // particle 1 moving along x
-    std::array<double, 3> positionI{};
+    /*std::array<double, 3> positionI{};
     std::array<double, 3> positionJ{{1, 1, 0}};
-    std::array<double, 3> positionK{{1, -1, 0}};
+    std::array<double, 3> positionK{{1, -1, 0}};*/
 
     // particle 1 moving along y
     /*std::array<double, 3> positionI{};
@@ -125,8 +125,13 @@ int main(int argc, char *argv[]) {
     std::array<double, 3> positionJ_unit{{1, 0, 0}};
     std::array<double, 3> positionK_unit{{2, 0, 0}};*/
 
+    // increasing thetaj
+    std::array<double, 3> positionI{};
+    std::array<double, 3> positionJ{{0, 0, 0}};
+    std::array<double, 3> positionK{{}};
+
     // Open the file
-    std::ofstream file("/Users/irene/TUM/thesis/AutoPas_Thesis/AutoPasFunctorBench/Argon/Particle1AlongX.csv");
+    std::ofstream file("/Users/irene/TUM/thesis/AutoPas_Thesis/AutoPasFunctorBench/Argon/ArgonPotential_R105R208_alternative.csv");
 
     // Check if the file is opened successfully
     if (!file.is_open()) {
@@ -135,15 +140,22 @@ int main(int argc, char *argv[]) {
     }
 
     // Write headers
-    file << "Position,Energy,Force_x,Force_y,Force_z" << std::endl;
+    file << "Distance,Theta,Energy,DispersionEnergy,RepulsiveEnergy" << std::endl;
 
 
-    size_t resolution = 2000;
+    size_t resolution = 1000;
     double increment = 0.001;
-    double distance = 0.;
+    double distance = 0.0;
     for (auto i = 0; i < resolution; i++) {
         distance += increment;
-        positionI = std::array<double, 3>{{distance, 0, 0}};
+        /*auto x = distance;
+        auto y = std::sqrt(0.4*0.4 - x*x);*/
+        auto x1 = distance*0.5;
+        auto x2 = distance*0.8;
+        auto y1 = std::sqrt(0.5*0.5-x1*x1);
+        auto y2 = std::sqrt(0.8*0.8-x2*x2);
+        positionI = std::array<double, 3>{{-x1, -y1, 0}};
+        positionK = std::array<double, 3>{{x2, -y2, 0}};
 
         // resize the triangle
         /*auto positionI = autopas::utils::ArrayMath::rescale_array(positionI_unit, r);
@@ -161,17 +173,22 @@ int main(int argc, char *argv[]) {
         const auto totalPotential = dispersionPotential + repulsivePotential;
 
         // Force on particle I
-        const auto dispersiveForceI = F_dispersive<I>(Z, beta, displacementHandleIJ, displacementHandleJK,
+        /*const auto dispersiveForceI = F_dispersive<I>(Z, beta, displacementHandleIJ, displacementHandleJK,
                                                       displacementHandleKI);
         const auto repulsiveForceI = F_repulsive<I>(A, alpha, displacementHandleIJ, displacementHandleJK,
                                                     displacementHandleKI);
         const auto totalForceI = autopas::utils::ArrayMath::sum_arrays(dispersiveForceI, repulsiveForceI);
+*/
+        const auto IJ = autopas::utils::ArrayMath::L2Norm(displacementHandleIJ.getDisplacement());
+        const auto JK = autopas::utils::ArrayMath::L2Norm(displacementHandleJK.getDisplacement());
+        const auto KI = autopas::utils::ArrayMath::L2Norm(displacementHandleKI.getDisplacement());
+        const auto thetaJ = std::acos((IJ*IJ + JK*JK - KI*KI)/(2*IJ*JK)) * 57.2958;
 
         const auto f = totalPotential;
-        const auto nabla_f = totalForceI;
+        //const auto nabla_f = totalForceI;
         // Write to CSV
-        file << std::fixed << std::setprecision(15) << distance << "," << f << ","
-        << nabla_f[0] << "," << nabla_f[1] << "," << nabla_f[2] << ","
+        file << std::fixed << std::setprecision(15) << distance << ","  << thetaJ << "," << f << "," << dispersionPotential << "," << repulsivePotential
+        //<< nabla_f[0] << "," << nabla_f[1] << "," << nabla_f[2] << ","
         << std::endl;
     }
 
