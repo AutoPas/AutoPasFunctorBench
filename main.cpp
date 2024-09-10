@@ -5,7 +5,8 @@
 #endif
 
 #include <molecularDynamicsLibrary/MoleculeLJ.h>
-#include <molecularDynamicsLibrary/ArgonFunctor.h>
+#include <molecularDynamicsLibrary/AxilrodTellerFunctor.h>
+#include <molecularDynamicsLibrary/TriwiseLUT.h>
 
 #include <autopas/cells/FullParticleCell.h>
 #include <autopas/utils/Timer.h>
@@ -20,7 +21,8 @@ constexpr autopas::FunctorN3Modes functorN3Modes{autopas::FunctorN3Modes::Both};
 constexpr bool newton3{true};
 constexpr bool globals{false};
 
-using ArgonFunctor = mdLib::ArgonFunctor<Particle, functorN3Modes, globals>;
+// using ATM = mdLib::AxilrodTellerFunctor<Particle, false, false, functorN3Modes, globals>;
+using ATM = mdLib::AxilrodTellerFunctor<Particle, false, true, functorN3Modes, globals>;
 
 double distSquared(std::array<double, 3> a, std::array<double, 3> b) {
     using autopas::utils::ArrayMath::sub;
@@ -46,7 +48,7 @@ void printTimer() {
                 << " : "
                 << std::setprecision(3)
                 << std::setw(8)
-                << static_cast<double>(timer[name].getTotalTime()) * 10e-9
+                << static_cast<double>(timer[name].getTotalTime()) * 1e-9
                 << " [s]\n";
     }
 }
@@ -72,13 +74,13 @@ std::vector<Particle> generateParticles(const size_t numberOfParticles, double c
     return particles;
 }
 
-void applyFunctorOnTriplet(ArgonFunctor &functor, Particle &i, Particle &j, Particle &k) {
+void applyFunctorOnTriplet(ATM &functor, Particle &i, Particle &j, Particle &k) {
     timer.at("Functor on Triplet").start();
     functor.AoSFunctor(i, j, k, newton3);
     timer.at("Functor on Triplet").stop();
 }
 
-void applyFunctorOnParticleSet(ArgonFunctor &functor, std::vector<Particle> &particles) {
+void applyFunctorOnParticleSet(ATM &functor, std::vector<Particle> &particles) {
     timer.at("Functor on Particle Set").start();
     for(std::size_t i = 0; i < particles.size(); ++i) {
         for (std::size_t j = i + 1; j < particles.size(); ++j) {
@@ -90,7 +92,7 @@ void applyFunctorOnParticleSet(ArgonFunctor &functor, std::vector<Particle> &par
     timer.at("Functor on Particle Set").stop();
 }
 
-void csvOutput(ArgonFunctor &functor, std::vector<Particle> &particles) {
+void csvOutput(ATM &functor, std::vector<Particle> &particles) {
     timer.at("Output").start();
     std::ofstream csvFile("particles.csv");
     if (not csvFile.is_open()) {
@@ -137,10 +139,13 @@ int main() {
 
     constexpr double cutoff{3.};
     // choose functor based on available architecture
-    ArgonFunctor functor{cutoff};
+
+    mdLib::TriwiseLUT lut(500);
+    ATM functor{cutoff, &lut};
+    functor.setParticleProperties(1.0);
 
     // define scenario
-    constexpr size_t numParticles{100};
+    constexpr size_t numParticles{150};
     constexpr size_t iterations{100};
     size_t calcsDistTotal{0};
     size_t calcsForceTotal{0};
@@ -161,8 +166,8 @@ int main() {
     }
 
     // print timer and statistics
-    const auto gflops =
-            static_cast<double>(calcsDistTotal * 8 + calcsForceTotal * functor.getNumFlopsPerKernelCall(0, 0, 0, true)) * 10e-9;
+    // const auto gflops =
+    //         static_cast<double>(calcsDistTotal * 8 + calcsForceTotal * functor.getNumFlopsPerKernelCall(0, 0, 0, true)) * 10e-9;
 
     using autopas::utils::ArrayUtils::operator<<;
 
@@ -170,8 +175,9 @@ int main() {
             << "Iterations         : " << iterations << "\n"
             << "Particels per cell : " << numParticles << "\n"
             << "Avgerage hit rate  : " << (static_cast<double>(calcsForceTotal) / calcsDistTotal) << "\n"
-            << "GFLOPs             : " << gflops << "\n"
-            << "GFLOPs/sec         : " << (gflops / (timer.at("Functor on Triplet").getTotalTime() * 10e-9)) << "\n";
+            << "Interaction Counter: " << calcsForceTotal / 1000000 << " M\n\n";
+            // << "GFLOPs             : " << gflops << "\n"
+            // << "GFLOPs/sec         : " << (gflops / (timer.at("Functor on Triplet").getTotalTime() * 10e-9)) << "\n";
 
     printTimer();
 }

@@ -13,7 +13,7 @@ endif ()
 FetchContent_Declare(
         autopasfetch
         GIT_REPOSITORY ${autopasRepoPath}
-        GIT_TAG SimulationConfig #Argon_Refactoring # Name of the branch with functor to test
+        GIT_TAG feat/3xa/atm-lut #Argon_Refactoring # Name of the branch with functor to test
 )
 # Populate dependency
 FetchContent_MakeAvailable(autopasfetch)
