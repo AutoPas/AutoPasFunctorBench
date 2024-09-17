@@ -31,11 +31,16 @@ double distSquared(std::array<double, 3> a, std::array<double, 3> b) {
 
 std::map<std::string, autopas::utils::Timer> timer{
         {"Initialization",          autopas::utils::Timer()},
-        {"Functor on Triplet",      autopas::utils::Timer()},
-        {"Functor on Particle Set", autopas::utils::Timer()},
+        {"Functor",                 autopas::utils::Timer()},
         {"Output",                  autopas::utils::Timer()},
         {"InteractionCounter",      autopas::utils::Timer()},
 };
+
+void resetTimer() {
+    for (const auto &[name, t]: timer) {
+        timer[name].reset();
+    }
+}
 
 void printTimer() {
     for (const auto &[name, t]: timer) {
@@ -46,7 +51,7 @@ void printTimer() {
                 << " : "
                 << std::setprecision(3)
                 << std::setw(8)
-                << static_cast<double>(timer[name].getTotalTime()) * 10e-9
+                << static_cast<double>(timer[name].getTotalTime()) * 1e-9
                 << " [s]\n";
     }
 }
@@ -73,13 +78,12 @@ std::vector<Particle> generateParticles(const size_t numberOfParticles, double c
 }
 
 void applyFunctorOnTriplet(ArgonFunctor &functor, Particle &i, Particle &j, Particle &k) {
-    timer.at("Functor on Triplet").start();
+    timer.at("Functor").start();
     functor.AoSFunctor(i, j, k, newton3);
-    timer.at("Functor on Triplet").stop();
+    timer.at("Functor").stop();
 }
 
 void applyFunctorOnParticleSet(ArgonFunctor &functor, std::vector<Particle> &particles) {
-    timer.at("Functor on Particle Set").start();
     for(std::size_t i = 0; i < particles.size(); ++i) {
         for (std::size_t j = i + 1; j < particles.size(); ++j) {
             for (std::size_t k = j + 1; k < particles.size(); ++k) {
@@ -87,7 +91,6 @@ void applyFunctorOnParticleSet(ArgonFunctor &functor, std::vector<Particle> &par
             }
         }
     }
-    timer.at("Functor on Particle Set").stop();
 }
 
 void csvOutput(ArgonFunctor &functor, std::vector<Particle> &particles) {
@@ -141,12 +144,10 @@ int main() {
 
     // define scenario
     constexpr size_t numParticles{100};
-    constexpr size_t iterations{100};
-    size_t calcsDistTotal{0};
-    size_t calcsForceTotal{0};
-    // repeat the whole experiment multiple times and average results
-    for (size_t iteration = 0; iteration < iterations; ++iteration) {
-        std::vector<Particle> particles{generateParticles(numParticles, cutoff)};
+    // generate particles at random positions
+    const std::vector<double> radiuses{{2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5}};
+    for (auto radius : radiuses) {
+        std::vector<Particle> particles{generateParticles(numParticles, radius)};
 
         // actual benchmark
         applyFunctorOnParticleSet(functor, particles);
@@ -155,23 +156,21 @@ int main() {
         csvOutput(functor, particles);
 
         // gather data for analysis
-        const auto [calcsDist, calcsForce] = countInteractions(particles, cutoff);
-        calcsDistTotal += calcsDist;
-        calcsForceTotal += calcsForce;
+        const auto [calcsDistTotal, calcsForceTotal] = countInteractions(particles, cutoff);
+
+        using autopas::utils::ArrayUtils::operator<<;
+
+        std::cout
+                << "Radius : " << radius << "\n"
+                << "Particels per cell : " << numParticles << "\n"
+                << "Number of function calls : " << calcsDistTotal << "\n"
+                << "Number of interactions : " << calcsForceTotal << "\n"
+                << "Avgerage hit rate  : " << (static_cast<double>(calcsForceTotal) / calcsDistTotal) << "\n"
+                ;
+
+        printTimer();
+        resetTimer();
+
+        std::cout << "----------------------------------------------------------------------------------------" << "\n";
     }
-
-    // print timer and statistics
-    const auto gflops =
-            static_cast<double>(calcsDistTotal * 8 + calcsForceTotal * functor.getNumFlopsPerKernelCall(0, 0, 0, true)) * 10e-9;
-
-    using autopas::utils::ArrayUtils::operator<<;
-
-    std::cout
-            << "Iterations         : " << iterations << "\n"
-            << "Particels per cell : " << numParticles << "\n"
-            << "Avgerage hit rate  : " << (static_cast<double>(calcsForceTotal) / calcsDistTotal) << "\n"
-            << "GFLOPs             : " << gflops << "\n"
-            << "GFLOPs/sec         : " << (gflops / (timer.at("Functor on Triplet").getTotalTime() * 10e-9)) << "\n";
-
-    printTimer();
 }
