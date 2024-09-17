@@ -13,7 +13,7 @@ endif ()
 FetchContent_Declare(
         autopasfetch
         GIT_REPOSITORY ${autopasRepoPath}
-        GIT_TAG Krypton3bFunctor    # Name of the branch with functor to test
+        GIT_TAG feat/3xa/noble-gas-functors    # Name of the branch with functor to test
 )
 # Populate dependency
 FetchContent_MakeAvailable(autopasfetch)
