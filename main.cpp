@@ -145,7 +145,7 @@ int main() {
     // define scenario
     constexpr size_t numParticles{100};
     // generate particles at random positions
-    const std::vector<double> radiuses{{2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5}};
+    const std::vector<double> radiuses{{1, 1.5, 2, 2.5}};//, 3, 3.5, 4, 4.5, 5, 5.5}};
     for (auto radius : radiuses) {
         std::vector<Particle> particles{generateParticles(numParticles, radius)};
 
