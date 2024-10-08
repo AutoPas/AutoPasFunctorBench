@@ -138,39 +138,47 @@ std::tuple<size_t, size_t> countInteractions(std::vector<Particle> &particles, d
  */
 int main() {
 
+    // Open the file
+    std::ofstream file("../Bench.csv");
+
+    // Check if the file is opened successfully
+    if (!file.is_open()) {
+        std::cout << "Error opening file!" << std::endl;
+        return 1;
+    }
+
+    // Write headers
+    file << "Radius,Particles,FunctionCalls,Interactions,HitRate,FunctorRuntime" << std::endl;
+
     constexpr double cutoff{3.};
     // choose functor based on available architecture
     ArgonFunctor functor{cutoff};
 
     // define scenario
     constexpr size_t numParticles{100};
-    // generate particles at random positions
+
     const std::vector<double> radiuses{{1, 1.5, 2, 2.5}};//, 3, 3.5, 4, 4.5, 5, 5.5}};
-    for (auto radius : radiuses) {
-        std::vector<Particle> particles{generateParticles(numParticles, radius)};
+    for (auto i=0 ; i<100; i++) {
+        for (auto radius : radiuses) {
+            // generate particles at random positions
+            std::vector<Particle> particles{generateParticles(numParticles, radius)};
+            // actual benchmark
+            applyFunctorOnParticleSet(functor, particles);
+            // gather data for analysis
+            const auto [calcsDistTotal, calcsForceTotal] = countInteractions(particles, cutoff);
 
-        // actual benchmark
-        applyFunctorOnParticleSet(functor, particles);
+            //using autopas::utils::ArrayUtils::operator<<;
 
-        // print particles to CSV
-        csvOutput(functor, particles);
+            file
+                    << radius << ","
+                    << numParticles << ","
+                    << calcsDistTotal << ","
+                    << calcsForceTotal << ","
+                    << (static_cast<double>(calcsForceTotal) / calcsDistTotal) << ","
+                    << static_cast<double>(timer["Functor"].getTotalTime()) * 1e-9 << std::endl;
 
-        // gather data for analysis
-        const auto [calcsDistTotal, calcsForceTotal] = countInteractions(particles, cutoff);
-
-        using autopas::utils::ArrayUtils::operator<<;
-
-        std::cout
-                << "Radius : " << radius << "\n"
-                << "Particels per cell : " << numParticles << "\n"
-                << "Number of function calls : " << calcsDistTotal << "\n"
-                << "Number of interactions : " << calcsForceTotal << "\n"
-                << "Avgerage hit rate  : " << (static_cast<double>(calcsForceTotal) / calcsDistTotal) << "\n"
-                ;
-
-        printTimer();
-        resetTimer();
-
-        std::cout << "----------------------------------------------------------------------------------------" << "\n";
+            resetTimer();
+        }
     }
+
 }
