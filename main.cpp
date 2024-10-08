@@ -139,7 +139,7 @@ std::tuple<size_t, size_t> countInteractions(std::vector<Particle> &particles, d
 int main() {
 
     // Open the file
-    std::ofstream file("../Bench.csv");
+    std::ofstream file("../Benchmark.csv");
 
     // Check if the file is opened successfully
     if (!file.is_open()) {
@@ -180,5 +180,7 @@ int main() {
             resetTimer();
         }
     }
+
+    file.close();
 
 }
