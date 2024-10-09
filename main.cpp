@@ -139,7 +139,7 @@ std::tuple<size_t, size_t> countInteractions(std::vector<Particle> &particles, d
 int main() {
 
     // Open the file
-    std::ofstream file("../Benchmark.csv");
+    std::ofstream file("../Benchmark_Cutoff.csv");
 
     // Check if the file is opened successfully
     if (!file.is_open()) {
@@ -148,24 +148,26 @@ int main() {
     }
 
     // Write headers
-    file << "Radius,Particles,FunctionCalls,Interactions,HitRate,FunctorRuntime" << std::endl;
+    file << "CutoffRadius,Particles,FunctionCalls,Interactions,HitRate,FunctorRuntime" << std::endl;
 
     constexpr double cutoff{3.};
-    // choose functor based on available architecture
-    ArgonFunctor functor{cutoff};
+
 
     // define scenario
     constexpr size_t numParticles{100};
+    // generate particles at random positions
+    std::vector<Particle> particles{generateParticles(numParticles, cutoff)};
 
-    const std::vector<double> radiuses{{1, 1.5, 2, 2.5}};//, 3, 3.5, 4, 4.5, 5, 5.5}};
+    const std::vector<double> radiuses{{1, 1.35, 1.6, 1.82, 2.03, 2.23, 2.43, 2.65, 2.94, 4.5}};
     for (auto i=0 ; i<100; i++) {
         for (auto radius : radiuses) {
-            // generate particles at random positions
-            std::vector<Particle> particles{generateParticles(numParticles, radius)};
+            // choose functor based on available architecture
+            ArgonFunctor functor{radius};
+
             // actual benchmark
             applyFunctorOnParticleSet(functor, particles);
             // gather data for analysis
-            const auto [calcsDistTotal, calcsForceTotal] = countInteractions(particles, cutoff);
+            const auto [calcsDistTotal, calcsForceTotal] = countInteractions(particles, radius);
 
             //using autopas::utils::ArrayUtils::operator<<;
 
