@@ -6,6 +6,7 @@
 
 #include <molecularDynamicsLibrary/MoleculeLJ.h>
 #include <molecularDynamicsLibrary/ArgonFunctor.h>
+#include <molecularDynamicsLibrary/AxilrodTellerFunctor.h>
 
 #include <autopas/cells/FullParticleCell.h>
 #include <autopas/utils/Timer.h>
@@ -21,6 +22,7 @@ constexpr bool newton3{true};
 constexpr bool globals{false};
 
 using ArgonFunctor = mdLib::ArgonFunctor<Particle, functorN3Modes, globals>;
+using ATMFunctor = mdLib::AxilrodTellerFunctor<Particle, mixing, functorN3Modes, globals>;
 
 double distSquared(std::array<double, 3> a, std::array<double, 3> b) {
     using autopas::utils::ArrayMath::sub;
@@ -30,10 +32,8 @@ double distSquared(std::array<double, 3> a, std::array<double, 3> b) {
 }
 
 std::map<std::string, autopas::utils::Timer> timer{
-        {"Initialization",          autopas::utils::Timer()},
-        {"Functor",                 autopas::utils::Timer()},
-        {"Output",                  autopas::utils::Timer()},
-        {"InteractionCounter",      autopas::utils::Timer()},
+        {"FunctorArgon",                 autopas::utils::Timer()},
+        {"FunctorATM",                 autopas::utils::Timer()}
 };
 
 void resetTimer() {
@@ -57,8 +57,6 @@ void printTimer() {
 }
 
 std::vector<Particle> generateParticles(const size_t numberOfParticles, double cutoff){
-    // generate randomly distributed particles
-    timer.at("Initialization").start();
     std::vector<Particle> particles;
     for (size_t particleId = 0; particleId < numberOfParticles; ++particleId) {
         Particle p{
@@ -73,17 +71,23 @@ std::vector<Particle> generateParticles(const size_t numberOfParticles, double c
                 0};
         particles.push_back(p);
     }
-    timer.at("Initialization").stop();
     return particles;
 }
 
 void applyFunctorOnTriplet(ArgonFunctor &functor, Particle &i, Particle &j, Particle &k) {
-    timer.at("Functor").start();
+    timer.at("FunctorArgon").start();
     functor.AoSFunctor(i, j, k, newton3);
-    timer.at("Functor").stop();
+    timer.at("FunctorArgon").stop();
 }
 
-void applyFunctorOnParticleSet(ArgonFunctor &functor, std::vector<Particle> &particles) {
+void applyFunctorOnTriplet(ATMFunctor &functor, Particle &i, Particle &j, Particle &k) {
+    timer.at("FunctorATM").start();
+    functor.AoSFunctor(i, j, k, newton3);
+    timer.at("FunctorATM").stop();
+}
+
+template<class FUNCTOR>
+void applyFunctorOnParticleSet(FUNCTOR &functor, std::vector<Particle> &particles) {
     for(std::size_t i = 0; i < particles.size(); ++i) {
         for (std::size_t j = i + 1; j < particles.size(); ++j) {
             for (std::size_t k = j + 1; k < particles.size(); ++k) {
@@ -93,26 +97,7 @@ void applyFunctorOnParticleSet(ArgonFunctor &functor, std::vector<Particle> &par
     }
 }
 
-void csvOutput(ArgonFunctor &functor, std::vector<Particle> &particles) {
-    timer.at("Output").start();
-    std::ofstream csvFile("particles.csv");
-    if (not csvFile.is_open()) {
-        throw std::runtime_error("FILE NOT OPEN!");
-    }
-    csvFile << "ParticleId,rX,rY,rZ,fX,fY,fZ\n";
-    for (auto p : particles) {
-        using autopas::utils::ArrayUtils::to_string;
-        csvFile << p.getID() << ","
-                << to_string(p.getR(), ",", {"", ""}) << ","
-                << to_string(p.getF(), ",", {"", ""})
-                << "\n";
-    }
-    csvFile.close();
-    timer.at("Output").stop();
-}
-
 std::tuple<size_t, size_t> countInteractions(std::vector<Particle> &particles, double cutoff) {
-    timer.at("InteractionCounter").start();
     size_t calcsDist{0};
     size_t calcsForce{0};
     const auto cutoffSquared{cutoff * cutoff};
@@ -128,7 +113,6 @@ std::tuple<size_t, size_t> countInteractions(std::vector<Particle> &particles, d
             }
         }
     }
-    timer.at("InteractionCounter").stop();
     return {calcsDist, calcsForce};
 }
 
@@ -148,7 +132,7 @@ int main() {
     }
 
     // Write headers
-    file << "CutoffRadius,Particles,FunctionCalls,Interactions,HitRate,FunctorRuntime" << std::endl;
+    file << "CutoffRadius,Particles,FunctionCalls,Interactions,HitRate,FunctorArgonRuntime,FunctorATMRuntime" << std::endl;
 
     constexpr double cutoff{3.};
 
@@ -158,14 +142,16 @@ int main() {
     // generate particles at random positions
     std::vector<Particle> particles{generateParticles(numParticles, cutoff)};
 
-    const std::vector<double> radiuses{{1, 1.35, 1.6, 1.82, 2.03, 2.23, 2.43, 2.65, 2.94, 4.5}};
+    const std::vector<double> radiuses{{1, 1.35, 1.6, 1.82, 2.03, 2.23, 2.43, 2.7, 3., 5.}};
     for (auto i=0 ; i<100; i++) {
         for (auto radius : radiuses) {
             // choose functor based on available architecture
-            ArgonFunctor functor{radius};
+            ArgonFunctor functorArgon{radius};
+            ATMFunctor functorATM{radius};
 
             // actual benchmark
-            applyFunctorOnParticleSet(functor, particles);
+            applyFunctorOnParticleSet(functorArgon, particles);
+            applyFunctorOnParticleSet(functorATM, particles);
             // gather data for analysis
             const auto [calcsDistTotal, calcsForceTotal] = countInteractions(particles, radius);
 
@@ -177,7 +163,8 @@ int main() {
                     << calcsDistTotal << ","
                     << calcsForceTotal << ","
                     << (static_cast<double>(calcsForceTotal) / calcsDistTotal) << ","
-                    << static_cast<double>(timer["Functor"].getTotalTime()) * 1e-9 << std::endl;
+                    << static_cast<double>(timer["FunctorArgon"].getTotalTime()) * 1e-9 << ","
+                    << static_cast<double>(timer["FunctorATM"].getTotalTime()) * 1e-9<< std::endl;
 
             resetTimer();
         }
