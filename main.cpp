@@ -34,7 +34,7 @@
 // type aliases for ease of use
 using Particle = mdLib::MoleculeLJ;
 using Cell = autopas::FullParticleCell<mdLib::MoleculeLJ>;
-using VectorizationPattern = autopas::VectorizationPatternOption::Value;
+// using VectorizationPattern = autopas::VectorizationPatternOption::Value;
 // some constants that define the benchmark
 constexpr bool shift{false};
 constexpr bool mixing{false};
@@ -43,7 +43,7 @@ constexpr bool newton3{true};
 constexpr bool globals{false};
 
 #if defined ENABLE_HWY
-using Functor = mdLib::LJFunctorHWY<VectorizationPattern::p1xVec, Particle, shift, mixing, functorN3Modes, globals, true>;
+using Functor = mdLib::LJFunctorHWY<Particle, shift, mixing, functorN3Modes, globals, true>;
 #elif defined ENABLE_XSIMD
 using Functor = mdLib::LJFunctorXSIMD<Particle, shift, mixing, functorN3Modes, globals>;
 #elif defined ENABLE_SIMDe
@@ -68,7 +68,7 @@ void checkFunctorType(const Functor &fun) {
     int identificationHits = 0;
 
 #if defined ENABLE_HWY
-    if (dynamic_cast<const mdLib::LJFunctorHWY<VectorizationPattern::p1xVec, Particle, shift, mixing, functorN3Modes, globals, true> *>(&fun)) {
+    if (dynamic_cast<const mdLib::LJFunctorHWY<Particle, shift, mixing, functorN3Modes, globals, true> *>(&fun)) {
         std::cout << "Using HWY Functor" << std::endl;
         ++identificationHits;
     }
