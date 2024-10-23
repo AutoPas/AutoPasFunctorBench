@@ -18,7 +18,7 @@ using Particle = mdLib::MoleculeLJ;
 constexpr bool shift{false};
 constexpr bool mixing{false};
 constexpr autopas::FunctorN3Modes functorN3Modes{autopas::FunctorN3Modes::Both};
-constexpr bool newton3{true};
+constexpr bool newton3{false};
 constexpr bool globals{false};
 
 using ArgonFunctor = mdLib::ArgonFunctor<Particle, functorN3Modes, globals>;
@@ -87,11 +87,24 @@ void applyFunctorOnTriplet(ATMFunctor &functor, Particle &i, Particle &j, Partic
 }
 
 template<class FUNCTOR>
-void applyFunctorOnParticleSet(FUNCTOR &functor, std::vector<Particle> &particles) {
-    for(std::size_t i = 0; i < particles.size(); ++i) {
+void applyFunctorOnParticleSet(FUNCTOR &functor, std::vector<Particle> &particles, double cutoff) {
+/*    for(std::size_t i = 0; i < particles.size(); ++i) {
         for (std::size_t j = i + 1; j < particles.size(); ++j) {
             for (std::size_t k = j + 1; k < particles.size(); ++k) {
                 applyFunctorOnTriplet(functor, particles[i], particles[j], particles[k]);
+            }
+        }
+    }*/
+    const auto cutoffSquared{cutoff * cutoff};
+    for (auto &p0: particles) {
+        for (auto &p1: particles) {
+            for (auto &p2: particles) {
+                if (p0 != p1 && p0 != p2 && p1 != p2) {
+                    if (distSquared(p0.getR(), p1.getR()) <= cutoffSquared && distSquared(p1.getR(), p2.getR()) <= cutoffSquared
+                        && distSquared(p0.getR(), p2.getR()) <= cutoffSquared) {
+                        applyFunctorOnTriplet(functor, p0, p1, p2);
+                    }
+                }
             }
         }
     }
@@ -106,7 +119,8 @@ std::tuple<size_t, size_t> countInteractions(std::vector<Particle> &particles, d
             for (const auto &p2: particles) {
                 if (p0 != p1 && p0 != p2 && p1 != p2) {
                     ++calcsDist;
-                    if (distSquared(p0.getR(), p1.getR()) <= cutoffSquared) {
+                    if (distSquared(p0.getR(), p1.getR()) <= cutoffSquared and distSquared(p1.getR(), p2.getR()) <= cutoffSquared
+                    and distSquared(p0.getR(), p2.getR()) <= cutoffSquared) {
                         ++calcsForce;
                     }
                 }
@@ -150,8 +164,8 @@ int main() {
             ATMFunctor functorATM{radius};
 
             // actual benchmark
-            applyFunctorOnParticleSet(functorArgon, particles);
-            applyFunctorOnParticleSet(functorATM, particles);
+            applyFunctorOnParticleSet(functorArgon, particles, cutoff);
+            applyFunctorOnParticleSet(functorATM, particles, cutoff);
             // gather data for analysis
             const auto [calcsDistTotal, calcsForceTotal] = countInteractions(particles, radius);
 
