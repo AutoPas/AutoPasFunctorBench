@@ -88,20 +88,13 @@ void applyFunctorOnTriplet(ATMFunctor &functor, Particle &i, Particle &j, Partic
 
 template<class FUNCTOR>
 void applyFunctorOnParticleSet(FUNCTOR &functor, std::vector<Particle> &particles, double cutoff) {
-/*    for(std::size_t i = 0; i < particles.size(); ++i) {
-        for (std::size_t j = i + 1; j < particles.size(); ++j) {
-            for (std::size_t k = j + 1; k < particles.size(); ++k) {
-                applyFunctorOnTriplet(functor, particles[i], particles[j], particles[k]);
-            }
-        }
-    }*/
     const auto cutoffSquared{cutoff * cutoff};
     for (auto &p0: particles) {
         for (auto &p1: particles) {
             for (auto &p2: particles) {
                 if (p0 != p1 && p0 != p2 && p1 != p2) {
-                    if (distSquared(p0.getR(), p1.getR()) <= cutoffSquared && distSquared(p1.getR(), p2.getR()) <= cutoffSquared
-                        && distSquared(p0.getR(), p2.getR()) <= cutoffSquared) {
+                    if (distSquared(p0.getR(), p1.getR()) <= cutoffSquared and distSquared(p1.getR(), p2.getR()) <= cutoffSquared
+                        and distSquared(p0.getR(), p2.getR()) <= cutoffSquared) {
                         applyFunctorOnTriplet(functor, p0, p1, p2);
                     }
                 }
@@ -152,20 +145,19 @@ int main() {
 
 
     // define scenario
-    constexpr size_t numParticles{100};
+    constexpr size_t numParticles{90};
     // generate particles at random positions
     std::vector<Particle> particles{generateParticles(numParticles, cutoff)};
 
-    const std::vector<double> radiuses{{1, 1.35, 1.6, 1.82, 2.03, 2.23, 2.43, 2.7, 3., 5.}};
+    const std::vector<double> radiuses{{1.78,2.05, 2.24, 2.41, 2.56, 2.7, 2.84, 3.02, 3.3, 4.2}};
     for (auto i=0 ; i<100; i++) {
         for (auto radius : radiuses) {
             // choose functor based on available architecture
             ArgonFunctor functorArgon{radius};
             ATMFunctor functorATM{radius};
-
             // actual benchmark
-            applyFunctorOnParticleSet(functorArgon, particles, cutoff);
-            applyFunctorOnParticleSet(functorATM, particles, cutoff);
+            applyFunctorOnParticleSet(functorArgon, particles, radius);
+            applyFunctorOnParticleSet(functorATM, particles, radius);
             // gather data for analysis
             const auto [calcsDistTotal, calcsForceTotal] = countInteractions(particles, radius);
 
