@@ -13,7 +13,7 @@ endif ()
 FetchContent_Declare(
         autopasfetch
         GIT_REPOSITORY ${autopasRepoPath}
-        GIT_TAG AVX512_LJ
+        GIT_TAG mixed-precision3
 )
 # Populate dependency
 FetchContent_MakeAvailable(autopasfetch)
