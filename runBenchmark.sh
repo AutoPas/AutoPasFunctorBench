@@ -29,6 +29,11 @@ for PRECISION in SPSP SPDP DPDP; do
             echo "Build failed for ${PRECISION}"
             continue
         fi
+
+        #give CPU some time to breath
+        echo "--------------------sleeping for 180--------------------"
+        sleep 180
+        echo "---------------------slept for 180---------------------"
         
         # Run benchmark and generate output file
         if ! ./AutoPasFunctorBench "${TYPE}" "${ITERATIONS}" "${PARTICLES}" "${PARTICLES}" "${DENSITY}" "../${OUTPUTFOLDERNAME}/${TYPE}${PRECISION}.json"; then
