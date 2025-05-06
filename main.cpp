@@ -246,7 +246,33 @@ void applyFunctorVerlet(Functor &functor, std::vector<Cell> &cells, const std::v
 #endif
     timer.at("Functor").stop();
 }
+template <typename  T>
+void writecsvline(const std::vector<T>& data, const std::string fileName, size_t first_cell_size, size_t second_cell_size) {
+    std::cout<<"writing times to csvFile!"<<std::endl;
+    std::fstream csvFile(fileName, std::ios::app | std::ios::in);
 
+
+    if (not csvFile.is_open()) {
+        throw std::runtime_error("FILE NOT OPEN!");
+    }
+
+    std::string line;
+    getline(csvFile,  line);
+
+    if (line.empty()) {
+        std::cout<<"found no line in csv:" <<line<<std::endl;
+        csvFile.clear();
+        csvFile << "fcs,scs,acc_time"<<std::endl;
+    }
+    csvFile.clear();
+    T sum = std::accumulate(data.begin(), data.end(), static_cast<T>(0));
+    double acc_time = static_cast<double>(sum) *static_cast<double>(1e-9);
+    csvFile << first_cell_size<<","<<second_cell_size<<","<<acc_time<<","<<std::endl;
+    csvFile.close();
+    std::cout<<"finished writing!"<<std::endl;
+
+
+}
 void csvOutput(Functor &functor, std::vector<Cell> &cells) {
     timer.at("Output").start();
     std::ofstream csvFile("particles.csv");
@@ -432,16 +458,21 @@ int main(int argc, char* argv[]) {
         // todo this is now hard-coded to have mixing - this should be somewhat more flexible
         ParticlePropertiesLibrary<double, size_t> PPL{cutoff};
         Functor functor{cutoff/*, PPL*/};
-
+        functor.setVecPattern(mdLib::VectorizationPattern::p2xVecDiv2);
         checkFunctorType(functor);
 
         // 5 site types to provide some variation (requiring gathering that is somewhat similar to a realistic scenario)
         if constexpr (mixing) {
-            PPL.addSiteType(0,1.,1.,1.);
-            PPL.addSiteType(1,1.,1.,1.);
-            PPL.addSiteType(2,1.,1.,1.);
-            PPL.addSiteType(3,1.,1.,1.);
-            PPL.addSiteType(4,1.,1.,1.);
+            PPL.addSiteType(0,1.);
+            PPL.addLJParametersToSite(0,1.,1.);
+            PPL.addSiteType(1,1.);
+            PPL.addLJParametersToSite(1,1.,1.);
+            PPL.addSiteType(2,1.);
+            PPL.addLJParametersToSite(2,1.,1.);
+            PPL.addSiteType(3,1.);
+            PPL.addLJParametersToSite(3,1.,1.);
+            PPL.addSiteType(4,1.);
+            PPL.addLJParametersToSite(4,1.,1.);
             PPL.calculateMixingCoefficients();
         } else {
             constexpr double epsilon24{24.};
@@ -513,4 +544,6 @@ int main(int argc, char* argv[]) {
     }
 
     writeListToJson<uint64_t>(times, outfile);
+    writecsvline<uint64_t>(times, "functortime.csv", 30,30);
+
 }
