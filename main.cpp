@@ -441,7 +441,153 @@ std::tuple<FunctorType, size_t, size_t, size_t, double, std::string> readCliInpu
  * Mini benchmark tool to estimate the inner most kernel performance of AutoPas
  * @return
  */
+std::string checkVecPattern(mdLib::VectorizationPattern vec_pat) {
+    if (vec_pat == mdLib::VectorizationPattern::p1xVec) {
+        return "p1xVec";
+    } else if (vec_pat == mdLib::VectorizationPattern::p2xVecDiv2) {
+        return "p2xVecDiv2";
+    } else if (vec_pat == mdLib::VectorizationPattern::pVecDiv2x2) {
+        return "pVecDiv2x2";
+    }else {
+        return "pVecx1";
+    }
+}
+
+
+
+
+void patternHelper(FunctorType functorType, size_t repetitions, size_t iterations, size_t firstnumParticles, size_t secondnumParticles, double hitRate,  std::string outfile, mdLib::VectorizationPattern vec_pat ) {
+    const double cutoff{3.}; // is also the cell size
+    const double skin{std::pow(1./hitRate, 1./3.)};
+    const double interactionLengthSquare{(cutoff * skin) * (cutoff * skin)};
+
+    std::vector<uint64_t> times {};
+    times.reserve(repetitions);
+    std::cout<<"Currently testing vectorization patter: "<< checkVecPattern(vec_pat)<<std::endl;
+    std::cout <<"Number of particles in first cell: "<< firstnumParticles <<std::endl;
+    std::cout <<"Number of particles in second cell: "<< secondnumParticles <<std::endl;
+    for (int n = 0; n < repetitions; ++n) {
+
+        // choose functor based on available architecture
+        // todo this is now hard-coded to have mixing - this should be somewhat more flexible
+        ParticlePropertiesLibrary<double, size_t> PPL{cutoff};
+        Functor functor{cutoff/*, PPL*/};
+        //setting the chosen vectorisation pattern for the benchmark
+        functor.setVecPattern(vec_pat);
+        //checkFunctorType(functor);
+
+
+        // 5 site types to provide some variation (requiring gathering that is somewhat similar to a realistic scenario)
+        if constexpr (mixing) {
+            PPL.addSiteType(0,1.);
+            PPL.addLJParametersToSite(0,1.,1.);
+            PPL.addSiteType(1,1.);
+            PPL.addLJParametersToSite(1,1.,1.);
+            PPL.addSiteType(2,1.);
+            PPL.addLJParametersToSite(2,1.,1.);
+            PPL.addSiteType(3,1.);
+            PPL.addLJParametersToSite(3,1.,1.);
+            PPL.addSiteType(4,1.);
+            PPL.addLJParametersToSite(4,1.,1.);
+            PPL.calculateMixingCoefficients();
+        } else {
+            constexpr double epsilon24{24.};
+            constexpr double sigmaSquare{1.};
+            functor.setParticleProperties(epsilon24, sigmaSquare);
+        }
+
+        // define scenario
+        const std::vector<size_t> numParticlesPerCell{firstnumParticles, secondnumParticles};
+        size_t calcsDistTotal{0};
+        size_t calcsForceTotal{0};
+        // repeat the whole experiment multiple times and average results
+        std::vector<Cell> cells{2};
+        std::vector<std::vector<size_t, autopas::AlignedAllocator<size_t>>> neighborLists (firstnumParticles);
+
+        initialization(functor, functorType, cells, neighborLists, numParticlesPerCell, cutoff, interactionLengthSquare, hitRate);
+
+        switch (functorType)
+        {
+        case FunctorType::pair:
+            for (size_t iteration = 0; iteration < iterations; ++iteration) {
+                // actual benchmark
+                applyFunctorPair(functor, cells);
+            }
+            break;
+        case FunctorType::single:
+            for (size_t iteration = 0; iteration < iterations; ++iteration) {
+                // actual benchmark
+                applyFunctorSingle(functor, cells);
+            }
+            break;
+        case FunctorType::verlet:
+            for (size_t iteration = 0; iteration < iterations; ++iteration) {
+                // actual benchmark
+                applyFunctorVerlet(functor, cells, neighborLists);
+            }
+            break;
+        default:
+            throw std::runtime_error("No functor type matched");
+        }
+
+        // print particles to CSV for checking and prevent compiler from optimizing everything away.
+        csvOutput(functor, cells);
+
+        // gather data for analysis
+        const auto [calcsDist, calcsForce] = countInteractions(cells, neighborLists, functorType, cutoff);
+        calcsDistTotal += calcsDist;
+        calcsForceTotal += calcsForce;
+
+        // print timer and statistics
+        const auto gflops =
+                static_cast<double>(calcsDistTotal * 8 + calcsForceTotal * (newton3 ? 18 : 15)) * 1e-9;
+    //    const auto gflops =
+    //            static_cast<double>(calcsDistTotal * 8 + calcsForceTotal * functor.getNumFlopsPerKernelCall()) * 1e-9;
+
+        using autopas::utils::ArrayUtils::operator<<;
+        /*
+        std::cout
+                << "Iterations         : " << iterations << "\n"
+                << "Particels per cell : " << numParticlesPerCell << "\n"
+                << "Avgerage hit rate  : " << (static_cast<double>(calcsForceTotal) / calcsDistTotal) << "\n"
+                << "GFLOPs             : " << gflops << "\n"
+                << "GFLOPs/sec         : " << (gflops / (timer.at("Functor").getTotalTime() * 1e-9)) << "\n";
+
+        printTimer();
+        */
+        times.push_back(timer["Functor"].getTotalTime());
+        resetTimer();
+    }
+
+    //writeListToJson<uint64_t>(times, outfile);
+    writecsvline<uint64_t>(times, outfile+".csv", firstnumParticles,secondnumParticles);
+
+}
+void patternBenchmark() {
+    using patterntype = mdLib::VectorizationPattern;
+    std::vector<patterntype> patterns = {patterntype::p1xVec,patterntype::p2xVecDiv2,patterntype::pVecDiv2x2, patterntype::pVecx1};
+    for (size_t i = 0; i<patterns.size(); i++) {
+        patterntype current_pattern = patterns[i];
+        std::cout<<"Starting benchmark for vectorization patter: "<< checkVecPattern(current_pattern)<<std::endl;
+        for (size_t firstnumberParticles = 1; firstnumberParticles<=30; firstnumberParticles++) {
+            for (size_t secondnumberParticles = 1; secondnumberParticles<=30; secondnumberParticles++) {
+                patternHelper(FunctorType::pair,1000,20000,firstnumberParticles,secondnumberParticles,0.5,checkVecPattern(current_pattern),current_pattern);
+            }
+        }
+
+    }
+    std::cout<< "Successfully finished pattern benchmark!"<<std::endl;
+    std::cout<< "lanes of a SIMD vector: " << mdLib::_vecLengthDouble<<std::endl;
+}
+
+
+
+
 int main(int argc, char* argv[]) {
+    if (true) {
+        patternBenchmark();
+        return 0;
+    }
 
     auto [functorType, repetitions, iterations, numParticles, hitRate, outfile] = readCliInput(argc, argv);
 
@@ -513,7 +659,7 @@ int main(int argc, char* argv[]) {
         default:
             throw std::runtime_error("No functor type matched");
         }
-        
+
         // print particles to CSV for checking and prevent compiler from optimizing everything away.
         csvOutput(functor, cells);
 
