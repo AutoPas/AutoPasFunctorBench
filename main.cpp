@@ -571,7 +571,7 @@ void patternBenchmark() {
         std::cout<<"Starting benchmark for vectorization patter: "<< checkVecPattern(current_pattern)<<std::endl;
         for (size_t firstnumberParticles = 1; firstnumberParticles<=30; firstnumberParticles++) {
             for (size_t secondnumberParticles = 1; secondnumberParticles<=30; secondnumberParticles++) {
-                patternHelper(FunctorType::pair,1000,20000,firstnumberParticles,secondnumberParticles,0.5,checkVecPattern(current_pattern),current_pattern);
+                patternHelper(FunctorType::pair,100,10000,firstnumberParticles,secondnumberParticles,0.5,checkVecPattern(current_pattern),current_pattern);
             }
         }
 
