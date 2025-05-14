@@ -246,8 +246,19 @@ void applyFunctorVerlet(Functor &functor, std::vector<Cell> &cells, const std::v
 #endif
     timer.at("Functor").stop();
 }
+std::string checkVecPattern(mdLib::VectorizationPattern vec_pat) {
+    if (vec_pat == mdLib::VectorizationPattern::p1xVec) {
+        return "p1xVec";
+    } else if (vec_pat == mdLib::VectorizationPattern::p2xVecDiv2) {
+        return "p2xVecDiv2";
+    } else if (vec_pat == mdLib::VectorizationPattern::pVecDiv2x2) {
+        return "pVecDiv2x2";
+    }else {
+        return "pVecx1";
+    }
+}
 template <typename  T>
-void writecsvline(const std::vector<T>& data, const std::string fileName, size_t first_cell_size, size_t second_cell_size) {
+void writecsvline(const std::vector<T>& data, const std::string fileName, size_t first_cell_size, size_t second_cell_size, mdLib::VectorizationPattern vec_pat) {
     std::cout<<"writing times to csvFile!"<<std::endl;
     std::fstream csvFile(fileName, std::ios::app | std::ios::in);
 
@@ -262,12 +273,12 @@ void writecsvline(const std::vector<T>& data, const std::string fileName, size_t
     if (line.empty()) {
         std::cout<<"found no line in csv:" <<line<<std::endl;
         csvFile.clear();
-        csvFile << "fcs,scs,acc_time"<<std::endl;
+        csvFile << "fcs,scs,acc_time,vec_pat"<<std::endl;
     }
     csvFile.clear();
     T sum = std::accumulate(data.begin(), data.end(), static_cast<T>(0));
     double acc_time = static_cast<double>(sum) *static_cast<double>(1e-9);
-    csvFile << first_cell_size<<","<<second_cell_size<<","<<acc_time<<","<<std::endl;
+    csvFile << first_cell_size<<","<<second_cell_size<<","<<acc_time<<","<<checkVecPattern(vec_pat)<<std::endl;
     csvFile.close();
     std::cout<<"finished writing!"<<std::endl;
 
@@ -441,17 +452,7 @@ std::tuple<FunctorType, size_t, size_t, size_t, double, std::string> readCliInpu
  * Mini benchmark tool to estimate the inner most kernel performance of AutoPas
  * @return
  */
-std::string checkVecPattern(mdLib::VectorizationPattern vec_pat) {
-    if (vec_pat == mdLib::VectorizationPattern::p1xVec) {
-        return "p1xVec";
-    } else if (vec_pat == mdLib::VectorizationPattern::p2xVecDiv2) {
-        return "p2xVecDiv2";
-    } else if (vec_pat == mdLib::VectorizationPattern::pVecDiv2x2) {
-        return "pVecDiv2x2";
-    }else {
-        return "pVecx1";
-    }
-}
+
 
 
 
@@ -560,7 +561,7 @@ void patternHelper(FunctorType functorType, size_t repetitions, size_t iteration
     }
 
     //writeListToJson<uint64_t>(times, outfile);
-    writecsvline<uint64_t>(times, outfile+".csv", firstnumParticles,secondnumParticles);
+    writecsvline<uint64_t>(times, "results.csv", firstnumParticles,secondnumParticles,vec_pat);
 
 }
 void patternBenchmark() {
@@ -572,6 +573,7 @@ void patternBenchmark() {
         for (size_t firstnumberParticles = 1; firstnumberParticles<=30; firstnumberParticles++) {
             for (size_t secondnumberParticles = 1; secondnumberParticles<=30; secondnumberParticles++) {
                 patternHelper(FunctorType::pair,100,10000,firstnumberParticles,secondnumberParticles,0.5,checkVecPattern(current_pattern),current_pattern);
+            // repetitions = 100, iterations = 10000
             }
         }
 
@@ -690,6 +692,6 @@ int main(int argc, char* argv[]) {
     }
 
     writeListToJson<uint64_t>(times, outfile);
-    writecsvline<uint64_t>(times, "functortime.csv", 30,30);
+    writecsvline<uint64_t>(times, "functortime.csv", 30,30, mdLib::VectorizationPattern::p1xVec);
 
 }
