@@ -13,7 +13,7 @@ endif ()
 FetchContent_Declare(
         autopasfetch
         GIT_REPOSITORY ${autopasRepoPath}
-        GIT_TAG 3B2BLUTRevised    # Name of the branch with functor to test
+        GIT_TAG 3B2BLUTRevision    # Name of the branch with functor to test
 )
 # Populate dependency
 FetchContent_MakeAvailable(autopasfetch)
