@@ -13,7 +13,7 @@ endif ()
 FetchContent_Declare(
         autopasfetch
         GIT_REPOSITORY ${autopasRepoPath}
-        GIT_TAG master
+        GIT_TAG Pairwise-Interpolant-Functor
 )
 # Populate dependency
 FetchContent_MakeAvailable(autopasfetch)

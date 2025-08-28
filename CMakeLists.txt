@@ -10,9 +10,11 @@ include(autopas)
 option(ENABLE_FAPP "Activate calls to Fujitsu Application Performance Profiler" OFF)
 
 add_executable(AutoPasFunctorBench main.cpp)
+
 target_link_libraries(AutoPasFunctorBench
         PUBLIC
         autopas
+        molecularDynamicsLibrary
         )
 target_compile_definitions(AutoPasFunctorBench
         PUBLIC

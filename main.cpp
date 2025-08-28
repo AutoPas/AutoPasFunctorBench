@@ -1,61 +1,25 @@
 #include <iostream>
 
-#ifdef ENABLE_FAPP
-#include "fj_tool/fapp.h"
-#endif
+#include <molecularDynamicsLibrary/interpolationKernels/KryptonKernel.h>
+#include <molecularDynamicsLibrary/PairwiseInterpolantFunctor.h>
+#include <molecularDynamicsLibrary/AbInitioKryptonPairFunctor.h>
+#include <molecularDynamicsLibrary/MoleculeLJ.h>
 
-// clang-format off
-#ifdef __AVX__
-#include <autopas/molecularDynamics/LJFunctorAVX.h>
-#elif __ARM_FEATURE_SVE
-#include <autopas/molecularDynamics/LJFunctorSVE.h>
-#else
-#error "Platform supports neither AVX nor ARM!"
-#endif
-// clang-format on
-
-#include <autopas/molecularDynamics/MoleculeLJ.h>
 #include <autopas/cells/FullParticleCell.h>
 #include <autopas/utils/Timer.h>
 #include <fstream>
 
 // type aliases for ease of use
-using Particle = autopas::MoleculeLJ<double>;
-using Cell = autopas::FullParticleCell<autopas::MoleculeLJ<double>>;
+using Particle = mdLib::MoleculeLJ;
+using Cell = autopas::FullParticleCell<mdLib::MoleculeLJ>;
+
 // some constants that define the benchmark
-constexpr bool shift{false};
-constexpr bool mixing{false};
 constexpr autopas::FunctorN3Modes functorN3Modes{autopas::FunctorN3Modes::Both};
 constexpr bool newton3{true};
 constexpr bool globals{false};
 
-#ifdef __AVX__
-using Functor = autopas::LJFunctorAVX<Particle, shift, mixing, functorN3Modes, globals>;
-#elif __ARM_FEATURE_SVE
-using Functor = autopas::LJFunctorSVE<Particle, shift, mixing, functorN3Modes, globals> ;
-#endif
-
-void checkFunctorType(const Functor &fun) {
-    int identificationHits = 0;
-#ifdef __AVX__
-    if (dynamic_cast<const autopas::LJFunctorAVX<Particle, shift, mixing, functorN3Modes, globals> *>(&fun)) {
-        std::cout << "Using AVX Functor" << std::endl;
-        ++identificationHits;
-    }
-#endif
-#ifdef __ARM_FEATURE_SVE
-    if (dynamic_cast<const autopas::LJFunctorSVE<Particle, shift, mixing, functorN3Modes, globals> *>(&fun)) {
-        std::cout << "Using SVE Functor" << std::endl;
-        ++identificationHits;
-    }
-#endif
-    if (identificationHits != 1) {
-        throw std::runtime_error(
-                "checkFunctorType matched "
-                + std::to_string(identificationHits)
-                + " types! There should only be one match.");
-    }
-}
+using InterpolantFunctor = mdLib::PairwiseInterpolantFunctor<mdLib::KryptonKernel, Particle, functorN3Modes, globals>;
+using ReferenceFunctor = mdLib::AbInitioKryptonPairFunctor<Particle, functorN3Modes, globals>;
 
 double distSquared(std::array<double, 3> a, std::array<double, 3> b) {
     using autopas::utils::ArrayMath::sub;
@@ -80,12 +44,12 @@ void printTimer() {
                 << " : "
                 << std::setprecision(3)
                 << std::setw(8)
-                << static_cast<double>(timer[name].getTotalTime()) * 10e-9
+                << static_cast<double>(timer[name].getTotalTime()) * 1e-9
                 << " [s]\n";
     }
 }
 
-void initialization(Functor &functor, std::vector<Cell> &cells, const std::vector<size_t> &numParticlesPerCell,
+void initialization(std::vector<Cell> &cells, const std::vector<size_t> &numParticlesPerCell,
                     double cutoff) {
     // initialize cells with randomly distributed particles
     timer.at("Initialization").start();
@@ -104,44 +68,8 @@ void initialization(Functor &functor, std::vector<Cell> &cells, const std::vecto
                     0};
             cells[cellId].addParticle(p);
         }
-        functor.SoALoader(cells[cellId], cells[cellId]._particleSoABuffer, 0);
     }
     timer.at("Initialization").stop();
-}
-
-void applyFunctor(Functor &functor, std::vector<Cell> &cells) {
-    timer.at("Functor").start();
-#ifdef ENABLE_FAPP
-    fapp_start("SoAFunctorPair", 1, 0);
-#endif
-    functor.SoAFunctorPair(cells[0]._particleSoABuffer, cells[1]._particleSoABuffer, newton3);
-#ifdef ENABLE_FAPP
-    fapp_stop("SoAFunctorPair", 1, 0);
-#endif
-    timer.at("Functor").stop();
-}
-
-void csvOutput(Functor &functor, std::vector<Cell> &cells) {
-    timer.at("Output").start();
-    std::ofstream csvFile("particles.csv");
-    if (not csvFile.is_open()) {
-        throw std::runtime_error("FILE NOT OPEN!");
-    }
-    csvFile << "CellId,ParticleId,rX,rY,rZ,fX,fY,fZ\n";
-    for (size_t cellId = 0; cellId < cells.size(); ++cellId) {
-        functor.SoAExtractor(cells[cellId], cells[cellId]._particleSoABuffer, 0);
-        for (size_t particleId = 0; particleId < cells[cellId].numParticles(); ++particleId) {
-            const auto &p = cells[cellId][particleId];
-            using autopas::utils::ArrayUtils::to_string;
-            csvFile << cellId << ","
-                    << p.getID() << ","
-                    << to_string(p.getR(), ",", {"", ""}) << ","
-                    << to_string(p.getF(), ",", {"", ""})
-                    << "\n";
-        }
-    }
-    csvFile.close();
-    timer.at("Output").stop();
 }
 
 std::tuple<size_t, size_t> countInteractions(std::vector<Cell> &cells, double cutoff) {
@@ -167,52 +95,51 @@ std::tuple<size_t, size_t> countInteractions(std::vector<Cell> &cells, double cu
  */
 int main() {
 
-    constexpr double cutoff{3.}; // is also the cell size
+    constexpr double cutoff{1.5}; // is also the cell size
 
     // choose functor based on available architecture
-    Functor functor{cutoff};
-    checkFunctorType(functor);
 
-    constexpr double epsilon24{24.};
-    constexpr double sigmaSquare{1.};
-    functor.setParticleProperties(epsilon24, sigmaSquare);
+    mdLib::KryptonKernel kernel = mdLib::KryptonKernel{};
+
+    const double a = 0.35;
+    const double b = cutoff;
+
+    std::vector<size_t> nodes {16};
+    std::vector<double> splits {};
+
+    InterpolantFunctor functor {kernel, cutoff, a, nodes, splits};
+    ReferenceFunctor refereceFunctor {cutoff};
 
     // define scenario
-    const std::vector<size_t> numParticlesPerCell{1000, 1000};
-    constexpr size_t iterations{100};
+    const std::vector<size_t> numParticlesPerCell{2000, 2000};
+    constexpr size_t iterations{1000};
     size_t calcsDistTotal{0};
     size_t calcsForceTotal{0};
     // repeat the whole experiment multiple times and average results
     for (size_t iteration = 0; iteration < iterations; ++iteration) {
         std::vector<Cell> cells{2};
 
-        initialization(functor, cells, numParticlesPerCell, cutoff);
+        initialization(cells, numParticlesPerCell, cutoff);
 
-        // TODO offer option to also test FunctorSingle
-        // actual benchmark
-        applyFunctor(functor, cells);
-
-        // print particles to CSV for checking and prevent compiler from optimizing everything away.
-        csvOutput(functor, cells);
-
+        timer.at("Functor").start();
+        for (auto& p1 : cells[0]) {
+            for (auto& p2 : cells[1]) {
+                functor.AoSFunctor(p1, p2, newton3);
+            }
+        }
+        timer.at("Functor").stop();
+        
         // gather data for analysis
         const auto [calcsDist, calcsForce] = countInteractions(cells, cutoff);
         calcsDistTotal += calcsDist;
         calcsForceTotal += calcsForce;
     }
-
-    // print timer and statistics
-    const auto gflops =
-            static_cast<double>(calcsDistTotal * 8 + calcsForceTotal * functor.getNumFlopsPerKernelCall()) * 10e-9;
-
     using autopas::utils::ArrayUtils::operator<<;
 
     std::cout
             << "Iterations         : " << iterations << "\n"
             << "Particels per cell : " << numParticlesPerCell << "\n"
-            << "Avgerage hit rate  : " << (static_cast<double>(calcsForceTotal) / calcsDistTotal) << "\n"
-            << "GFLOPs             : " << gflops << "\n"
-            << "GFLOPs/sec         : " << (gflops / (timer.at("Functor").getTotalTime() * 10e-9)) << "\n";
+            << "Avgerage hit rate  : " << (static_cast<double>(calcsForceTotal) / calcsDistTotal) << "\n";
 
     printTimer();
 }
