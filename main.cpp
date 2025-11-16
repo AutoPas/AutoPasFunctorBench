@@ -4,35 +4,32 @@
 #include <variant>
 
 // Include the functor(s) to test
-#include <molecularDynamicsLibrary/AxilrodTellerFunctor.h>
-#include <molecularDynamicsLibrary/KryptonExtendedATMFunctor.h>
-#include <molecularDynamicsLibrary/KryptonPairFunctor.h>
+#include <molecularDynamicsLibrary/AxilrodTellerMutoMultisiteFunctor.h>
+#include <molecularDynamicsLibrary/MethaneMultisitePairwiseFunctor.h>
 #include <molecularDynamicsLibrary/LJFunctor.h>
 
-#include <molecularDynamicsLibrary/MoleculeLJ.h>
+#include <molecularDynamicsLibrary/MultisiteMoleculeLJ.h>
 #include <autopas/cells/FullParticleCell.h>
 #include <autopas/utils/Timer.h>
 #include <autopas/utils/ArrayMath.h>
 
 // type aliases for ease of use
-using Particle = mdLib::MoleculeLJ;
-using Cell = autopas::FullParticleCell<mdLib::MoleculeLJ>;
+using Particle = mdLib::MultisiteMoleculeLJ;
+using Cell = autopas::FullParticleCell<mdLib::MultisiteMoleculeLJ>;
 // some constants that define the experiments
 constexpr autopas::FunctorN3Modes functorN3Modes{autopas::FunctorN3Modes::Both};
 constexpr bool newton3{true};
 constexpr bool globals{true};
 
 // Chose the Functors
-using KrEATMFunctor = mdLib::KryptonExtendedATMFunctor<Particle, functorN3Modes, globals>;
-using ATMFunctor = mdLib::AxilrodTellerFunctor<Particle, false, functorN3Modes, globals>;
-using KrPairFunctor = mdLib::KryptonPairFunctor<Particle, functorN3Modes, globals>;
+using ATMFunctor = mdLib::AxilrodTellerMutoMultisiteFunctor<Particle, false, true, functorN3Modes, globals>;
+using MethanePairFunctor = mdLib::MethaneMultisitePairwiseFunctor<Particle, false, functorN3Modes, globals>;
 using LJFunctor = mdLib::LJFunctor<mdLib::MoleculeLJ, true, false, functorN3Modes, true, true>;
 
 enum class FunctorOption {
     LJFunctor,
-    KrPairFunctor,
+    MethanePairFunctor,
     ATMFunctor,
-    KrEATMFunctor
 };
 
 enum class GeometryOption {
@@ -46,19 +43,15 @@ std::string getCSVFileName(FunctorOption functorOption, GeometryOption geometryO
     switch (functorOption) {
         case FunctorOption::LJFunctor:
             std::cout << "Using the Lennard-Jones Functor\n";
-            filenameStream << "kr-2b-lj";
+            filenameStream << "2b-lj";
         break;
-        case FunctorOption::KrPairFunctor:
-            std::cout << "Using the Ab-initio pairwise Krypton Functor\n";
-            filenameStream << "kr-2b-abinitio";
+        case FunctorOption::MethanePairFunctor:
+            std::cout << "Using the pairwise Methane Functor\n";
+            filenameStream << "methane-2b";
         break;
         case FunctorOption::ATMFunctor:
             std::cout << "Using the Axilrod-Teller-Muto Functor\n";
-            filenameStream << "kr-3b-atm";
-        break;
-        case FunctorOption::KrEATMFunctor:
-            std::cout << "Using the extended Axilrod-Teller Functor\n";
-            filenameStream << "kr-3b-eatm";
+            filenameStream << "3b-atm";
         break;
         default:
             return "";
@@ -90,8 +83,8 @@ void setEquilateral(Particle &p2, Particle &p3, double distance) {
 }
 
 void setLinear(Particle &p1, Particle &p2, Particle &p3, double distance) {
-    p1.setR({10.0 + distance, 0., 0.});
-    p2.setR({10.0, 0., 0.});
+    p1.setR({10.0, 0., 0.});
+    p2.setR({10.0 + distance, 0., 0.});
     p3.setR({9.8, 0., 0.});
 }
 
@@ -100,6 +93,17 @@ void setIsosceles(Particle& p1, Particle &p2, Particle &p3, double distance) {
     p2.setR({0.0, 0.0, 0.0});
     p3.setR({0.0, 4.0, 0.0});
 }
+
+std::vector<std::array<double, 3>> createTetrahedralSites(double factor) {
+    constexpr double distCH = 1.099;
+    const auto siteDist = factor * distCH;
+    std::vector<std::array<double, 3>> sitePositions{{-siteDist, 0.0, 0.0}};
+    sitePositions.push_back({siteDist / 3., siteDist * (2.* std::sqrt(2.) / 3.), 0.0});
+    sitePositions.push_back({siteDist / 3., - siteDist * std::sqrt(2.) / 3., siteDist * std::sqrt(6.) / 3.});
+    sitePositions.push_back({siteDist / 3., - siteDist * std::sqrt(2.) / 3., -siteDist * std::sqrt(6.) / 3.});
+    return sitePositions;
+}
+
 
 /**
  * Mini validation setup that writes functor results to a CSV
@@ -112,7 +116,7 @@ int main(int argc, char* argv[]) {
 
     if (argc < 2) {
         std::cerr << "Usage: -f <functor> [-g <geometry>]" << std::endl;
-        std::cerr << "functor: 0 : Lennard-Jones (default); 1 : Ab-Initio Krypton Pair; 2 : Axilrod-Teller; 3 : extended Axilrod-Teller\n";
+        std::cerr << "functor: 0 : Lennard-Jones (default); 1 : Methane Multisite Pair; 2 : Axilrod-Teller\n";
         std::cerr << "Geometry: 0 : linear (default); 1 : equilateral; 2 : isosceles\n";
         return 1;
     }
@@ -128,7 +132,7 @@ int main(int argc, char* argv[]) {
             break;
             default:
                 std::cerr << "Usage: -f <functor> [-g <geometry>]" << std::endl;
-                std::cerr << "functor: 0 : Lennard-Jones (default); 1 : Ab-Initio Krypton Pair; 2 : Axilrod-Teller; 3 : extended Axilrod-Teller\n";
+                std::cerr << "functor: 0 : Lennard-Jones (default); 1 : Methane Multisite Pair; 2 : Axilrod-Teller\n";
                 std::cerr << "Geometry: 0 : linear (default); 1 : equilateral; 2 : isosceles\n";
             return 1;
         }
@@ -140,29 +144,43 @@ int main(int argc, char* argv[]) {
     const double sigma = r_eps / (std::pow(2.0, 1.0 / 6.0));
     constexpr double nu = 1.61525e6;
     std::cout << "Sigma: " << sigma << std::endl;
-    auto particle1 = Particle({0., 0., 0.}, {0., 0., 0.}, 0, 0);
-    auto particle2 = Particle({0., 0., 0.}, {0., 0., 0.}, 0, 0);
-    auto particle3 = Particle({0., 0., 0.}, {0., 0., 0.}, 0, 0);
+    auto particle1 = Particle({0., 0., 0.}, {0., 0., 0.}, {0., 0., 0., 1.}, {0., 0., 0.}, 0, 0);
+    auto particle2 = Particle({0., 0., 0.}, {0., 0., 0.}, {1., 0., 0., 0.}, {0., 0., 0.}, 0, 0);
+    auto particle3 = Particle({0., 0., 0.}, {0., 0., 0.}, {0., 0., 0., 0.}, {0., 0., 0.}, 0, 0);
 
     std::string filename = getCSVFileName(functorOption, geometryOption);
 
+    ParticlePropertiesLibrary ppLibrary{cutoff};
+    ppLibrary.addSiteType(0, 16.04);
+    ppLibrary.addLJParametersToSite(0, epsilon, sigma);
+    ppLibrary.addSiteType(1, 0);
+    ppLibrary.addLJParametersToSite(1, epsilon, sigma);
+    ppLibrary.addSiteType(2, 0);
+    ppLibrary.addLJParametersToSite(2, epsilon, sigma);
+
+    std::vector<std::array<double, 3>> positions{{0., 0., 0.}};
+    auto positionsH088 = createTetrahedralSites(0.88);
+    auto positionsH066 = createTetrahedralSites(-0.66);
+    positions.insert(positions.end(), positionsH088.begin(), positionsH088.end());
+    positions.insert(positions.end(), positionsH066.begin(), positionsH066.end());
+    std::vector<size_t> siteIDs{0, 1, 1, 1, 1, 2, 2, 2, 2};
+    ppLibrary.addMolType(0, siteIDs, positions, {1., 1., 1.});
+
     // Create the selected functor as a std::variant
-    auto createFunctor = [&] () -> std::variant<LJFunctor, KrPairFunctor, ATMFunctor, KrEATMFunctor> {
+    auto createFunctor = [&] () -> std::variant<LJFunctor, MethanePairFunctor, ATMFunctor> {
         switch (functorOption) {
-        case FunctorOption::LJFunctor: {
-            LJFunctor ljfunctor{cutoff};
-            ljfunctor.setParticleProperties(24 * epsilon, sigma * sigma);
-            return ljfunctor;
-        }
-        case FunctorOption::KrPairFunctor:
-            return KrPairFunctor{cutoff};
-        case FunctorOption::ATMFunctor: {
-            ATMFunctor atmfunctor{cutoff};
-            atmfunctor.setParticleProperties(nu);
-            return atmfunctor;
-        }
-        case FunctorOption::KrEATMFunctor:
-            return KrEATMFunctor{cutoff};
+            case FunctorOption::LJFunctor: {
+                LJFunctor ljfunctor{cutoff};
+                ljfunctor.setParticleProperties(24 * epsilon, sigma * sigma);
+                return ljfunctor;
+            }
+            case FunctorOption::MethanePairFunctor:
+                return MethanePairFunctor{cutoff, ppLibrary};
+            case FunctorOption::ATMFunctor: {
+                ATMFunctor atmfunctor{cutoff};
+                atmfunctor.setParticleProperties(nu);
+                return atmfunctor;
+            }
         }
         throw std::invalid_argument("Unknown functor option!");
     };
@@ -181,9 +199,9 @@ int main(int argc, char* argv[]) {
     // Write headers
     file << "Distance [A],Energy [K],Force_x [K/A],Force_y [K/A],Force_z [K/A]" << std::endl;
 
-    double distance = 2.0;
-    constexpr double maxDistance = 15.0;
-    constexpr double increment = 0.02;
+    double distance = 2.5;
+    constexpr double maxDistance = 10.0;
+    constexpr double increment = 0.1;
     double epot{};
 
     while (distance <= maxDistance) {
@@ -213,10 +231,10 @@ int main(int argc, char* argv[]) {
             f.initTraversal();
 
             using T = std::decay_t<decltype(f)>;
-            if constexpr (std::is_same_v<T, LJFunctor> || std::is_same_v<T, KrPairFunctor>) {
+            if constexpr (std::is_same_v<T, LJFunctor> || std::is_same_v<T, MethanePairFunctor>) {
                 // Call AoSFunctor with two particles for LJFunctor and KrPairFunctor
                 f.AoSFunctor(particle1, particle2, newton3);
-            } else if constexpr (std::is_same_v<T, ATMFunctor> || std::is_same_v<T, KrEATMFunctor>) {
+            } else if constexpr (std::is_same_v<T, ATMFunctor>) {
                 // Call AoSFunctor with three particles for ATMFunctor and KrEATMFunctor
                 f.AoSFunctor(particle1, particle2, particle3, newton3);
             }
