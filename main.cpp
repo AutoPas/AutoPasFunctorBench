@@ -61,12 +61,12 @@ void printTimers(const size_t numTriplets, const size_t numInteractions) {
 }
 
 void generateParticles(ATM &functor, std::vector<Cell> &cells, const size_t numberOfParticles,
-    const double cutoff, const FunctorMode mode){
+    const double cellSize, const FunctorMode mode){
     timer.at("Initialization").start();
     // generate randomly distributed particles
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_real_distribution<double> dis(0.0, cutoff);
+    std::uniform_real_distribution<double> dis(0.0, cellSize);
 
     auto fillCellWithParticles = [&] (Cell& cell, double xShift, double yShift, double zShift) {
         for (size_t particleId = 0; particleId < numberOfParticles; ++particleId) {
@@ -84,10 +84,10 @@ void generateParticles(ATM &functor, std::vector<Cell> &cells, const size_t numb
         fillCellWithParticles(cells[0], 0., 0., 0.);
             break;
         case SOATRIPLE:
-            fillCellWithParticles(cells[2], 0., cutoff, 0.);
+            fillCellWithParticles(cells[2], 0., cellSize, 0.);
             functor.SoALoader(cells[2], cells[2]._particleSoABuffer, 0, false);
         case SOAPAIR:
-            fillCellWithParticles(cells[1], cutoff, 0., 0.);
+            fillCellWithParticles(cells[1], cellSize, 0., 0.);
             functor.SoALoader(cells[1], cells[1]._particleSoABuffer, 0, false);
         case SOASINGLE:
             fillCellWithParticles(cells[0], 0., 0., 0.);
@@ -218,17 +218,17 @@ std::tuple<size_t, size_t> countInteractions(std::vector<Cell> &cells, const dou
 int main() {
     using autopas::utils::ArrayUtils::operator<<;
 
-    constexpr double cutoff{3.};
+    constexpr double cellSize{3.};
+    constexpr double cutoff{1000.};
     constexpr double nu{1.0};
 
     ATM functor{cutoff};
     functor.setParticleProperties(nu);
 
     // define scenario
-    constexpr size_t numParticles{150};
-    constexpr size_t iterations{100};
+    constexpr size_t numParticles{100};
+    constexpr size_t iterations{1};
     constexpr std::array functorsToTest = {AOS, SOASINGLE, SOAPAIR, SOATRIPLE};
-
 
     std::cout << functor.getName() << " Benchmark: " <<
         "\nParticles per Cell: " << numParticles <<
@@ -243,7 +243,7 @@ int main() {
         for (size_t iteration = 0; iteration < iterations; ++iteration) {
 
             std::vector<Cell> cells{3};
-            generateParticles(functor, cells, numParticles, cutoff, functorMode);
+            generateParticles(functor, cells, numParticles, cellSize, functorMode);
 
             // actual benchmark
             applyFunctorOnParticles(functor, cells, functorMode);
