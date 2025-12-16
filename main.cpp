@@ -12,15 +12,6 @@
 using Particle = mdLib::MoleculeLJ;
 using Cell = autopas::FullParticleCell<Particle>;
 
-// some constants that define the benchmark
-constexpr bool mixing{false};
-constexpr autopas::FunctorN3Modes functorN3Modes{autopas::FunctorN3Modes::Both};
-constexpr bool newton3{true};
-constexpr bool globals{false};
-
-// using ATM = mdLib::AxilrodTellerFunctor<Particle, false, functorN3Modes, globals>;
-using ATM = mdLib::AxilrodTellerMutoFunctor<Particle, false, functorN3Modes, globals>;
-
 enum FunctorMode {
     AOS,
     SOASINGLE,
@@ -60,7 +51,8 @@ void printTimers(const size_t numTriplets, const size_t numInteractions) {
 
 }
 
-void generateParticles(ATM &functor, std::vector<Cell> &cells, const size_t numberOfParticles,
+template<typename FunctorType>
+void generateParticles(FunctorType &functor, std::vector<Cell> &cells, const size_t numberOfParticles,
     const double cellSize, const FunctorMode mode){
     timer.at("Initialization").start();
     // generate randomly distributed particles
@@ -97,7 +89,8 @@ void generateParticles(ATM &functor, std::vector<Cell> &cells, const size_t numb
     timer.at("Initialization").stop();
 }
 
-void applyAoSFunctor(ATM &functor, Cell &cell) {
+template<bool newton3, typename FunctorType>
+void applyAoSFunctor(FunctorType &functor, Cell &cell) {
     for(std::size_t i = 0; i < cell.size(); ++i) {
         for (std::size_t j = i + 1; j < cell.size(); ++j) {
             for (std::size_t k = j + 1; k < cell.size(); ++k) {
@@ -109,11 +102,12 @@ void applyAoSFunctor(ATM &functor, Cell &cell) {
     }
 }
 
-void applyFunctorOnParticles(ATM &functor, std::vector<Cell> &cells, const FunctorMode mode) {
+template<bool newton3, typename FunctorType>
+void applyFunctorOnParticles(FunctorType &functor, std::vector<Cell> &cells, const FunctorMode mode) {
     timer.at("Functor").start();
     switch (mode) {
         case AOS:
-            applyAoSFunctor(functor, cells[0]);
+            applyAoSFunctor<newton3>(functor, cells[0]);
             break;
         case SOASINGLE:
             functor.SoAFunctorSingle(cells[0]._particleSoABuffer, newton3);
@@ -211,25 +205,8 @@ std::tuple<size_t, size_t> countInteractions(std::vector<Cell> &cells, const dou
     return {calcsDist, calcsForce};
 }
 
-/**
- * Mini benchmark tool to estimate the inner most kernel performance of AutoPas
- * @return
- */
-int main() {
-    using autopas::utils::ArrayUtils::operator<<;
-
-    constexpr double cellSize{3.};
-    constexpr double cutoff{1000.};
-    constexpr double nu{1.0};
-
-    ATM functor{cutoff};
-    functor.setParticleProperties(nu);
-
-    // define scenario
-    constexpr size_t numParticles{100};
-    constexpr size_t iterations{1};
-    constexpr std::array functorsToTest = {AOS, SOASINGLE, SOAPAIR, SOATRIPLE};
-
+template <bool newton3, typename FunctorType>
+void runBenchmarkForFunctor(FunctorType &functor, size_t numParticles, size_t iterations, double cellSize, double cutoff, const std::vector<FunctorMode> &functorsToTest) {
     std::cout << functor.getName() << " Benchmark: " <<
         "\nParticles per Cell: " << numParticles <<
             "\nIteration Average: " << iterations << "\n\n";
@@ -246,7 +223,7 @@ int main() {
             generateParticles(functor, cells, numParticles, cellSize, functorMode);
 
             // actual benchmark
-            applyFunctorOnParticles(functor, cells, functorMode);
+            applyFunctorOnParticles<newton3>(functor, cells, functorMode);
 
             // print particles to CSV
             // csvOutput(functor, cells);
@@ -272,4 +249,36 @@ int main() {
         std::cout << "Average Hit Rate     : " << static_cast<double>(calcsForceTotal) / static_cast<double>(calcsDistTotal) * 100 << " %\n"
                   << "# of Interactions    : " << calcsForceTotal / iterations << "\n";
     }
+}
+
+
+/**
+ * Mini benchmark tool to estimate the inner most kernel performance of AutoPas
+ * @return
+ */
+int main() {
+    using autopas::utils::ArrayUtils::operator<<;
+
+    // some constants that define the benchmark
+    constexpr bool mixing{false};
+    constexpr autopas::FunctorN3Modes functorN3Modes{autopas::FunctorN3Modes::Both};
+    constexpr bool newton3{true};
+    constexpr bool globals{false};
+
+    constexpr double cellSize{3.};
+    constexpr double cutoff{1000.};
+    constexpr double nu{1.0};
+
+
+    // define the test scenario
+    constexpr size_t numParticles{100};
+    constexpr size_t iterations{1};
+    const std::vector functorsToTest = {AOS, SOASINGLE, SOAPAIR, SOATRIPLE};
+
+
+    // Setup Benchmarks for desired functors
+    auto functor = mdLib::AxilrodTellerMutoFunctor<Particle, false, functorN3Modes, globals>{cutoff};
+    functor.setParticleProperties(nu);
+    runBenchmarkForFunctor<newton3>(functor, numParticles, iterations, cellSize, cutoff, functorsToTest);
+
 }
