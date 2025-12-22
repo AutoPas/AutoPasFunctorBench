@@ -144,8 +144,8 @@ int main(int argc, char* argv[]) {
     const double sigma = r_eps / (std::pow(2.0, 1.0 / 6.0));
     constexpr double nu = 1.61525e6;
     std::cout << "Sigma: " << sigma << std::endl;
-    auto particle1 = Particle({0., 0., 0.}, {0., 0., 0.}, {0., 0., 0., 1.}, {0., 0., 0.}, 0, 0);
-    auto particle2 = Particle({0., 0., 0.}, {0., 0., 0.}, {1., 0., 0., 0.}, {0., 0., 0.}, 0, 0);
+    auto particle1 = Particle({0., 0., 0.}, {0., 0., 0.}, {1., 0., 0., 0.}, {0., 0., 0.}, 0, 0);
+    auto particle2 = Particle({0., 0., 0.}, {0., 0., 0.}, {0., 0., 0., 1.}, {0., 0., 0.}, 0, 0);
     auto particle3 = Particle({0., 0., 0.}, {0., 0., 0.}, {0., 0., 0., 0.}, {0., 0., 0.}, 0, 0);
 
     std::string filename = getCSVFileName(functorOption, geometryOption);
@@ -200,8 +200,8 @@ int main(int argc, char* argv[]) {
     file << "Distance [A],Energy [K],Force_x [K/A],Force_y [K/A],Force_z [K/A]" << std::endl;
 
     double distance = 2.5;
-    constexpr double maxDistance = 10.0;
-    constexpr double increment = 0.1;
+    constexpr double maxDistance = 8.5;
+    constexpr double increment = 0.01;
     double epot{};
 
     while (distance <= maxDistance) {
