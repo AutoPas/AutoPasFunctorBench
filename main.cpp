@@ -2,6 +2,7 @@
 
 #include <molecularDynamicsLibrary/MoleculeLJ.h>
 #include <molecularDynamicsLibrary/AxilrodTellerMutoFunctor.h>
+#include "benchmark/benchmark.h"
 
 #include <autopas/cells/FullParticleCell.h>
 #include <autopas/utils/Timer.h>
@@ -211,65 +212,81 @@ std::tuple<size_t, size_t> countInteractions(std::vector<Cell> &cells, const dou
     return {calcsDist, calcsForce};
 }
 
-/**
- * Mini benchmark tool to estimate the inner most kernel performance of AutoPas
- * @return
- */
-int main() {
-    using autopas::utils::ArrayUtils::operator<<;
+class FunctorTestFixture : public benchmark::Fixture
+{
+public:
+    void SetUp(const benchmark::State&) override
+    {
 
-    constexpr double cellSize{3.};
-    constexpr double cutoff{1000.};
-    constexpr double nu{1.0};
+    }
+    void TearDown(const benchmark::State&) override
+    {
 
-    ATM functor{cutoff};
-    functor.setParticleProperties(nu);
+    }
 
-    // define scenario
-    constexpr size_t numParticles{100};
-    constexpr size_t iterations{1};
-    constexpr std::array functorsToTest = {AOS, SOASINGLE, SOAPAIR, SOATRIPLE};
+    const double cellSize{3.};
+    const double cutoff{3.};
+    const double nu{1.0};
 
-    std::cout << functor.getName() << " Benchmark: " <<
-        "\nParticles per Cell: " << numParticles <<
-            "\nIteration Average: " << iterations << "\n\n";
+    const size_t numParticles{100};
+    const size_t iterations{1};
+    const std::array<FunctorMode, 4> functorsToTest = {
+        AOS,
+        SOASINGLE,
+        SOAPAIR,
+        SOATRIPLE
+    };
 
-    // repeat the whole experiment multiple times and average results
-    for (const auto &functorMode : functorsToTest) {
-        size_t calcsDistTotal{0};
-        size_t calcsForceTotal{0};
-        timer.at("Functor").reset();
+    void runBenchmarkForFunctorMode(benchmark::State& state, FunctorMode functorMode) const
+    {
+        ATM functor{cutoff};
+        functor.setParticleProperties(nu);
 
-        for (size_t iteration = 0; iteration < iterations; ++iteration) {
+        std::size_t calcsDistTotal = 0;
+        std::size_t calcsForceTotal = 0;
 
+        for (auto _ : state)
+        {
+            state.PauseTiming();
             std::vector<Cell> cells{3};
             generateParticles(functor, cells, numParticles, cellSize, functorMode);
+            state.ResumeTiming();
 
-            // actual benchmark
             applyFunctorOnParticles(functor, cells, functorMode);
 
-            // print particles to CSV
-            // csvOutput(functor, cells);
-
-            // gather data for analysis
+            state.PauseTiming();
             const auto [calcsDist, calcsForce] = countInteractions(cells, cutoff, functorMode);
             calcsDistTotal += calcsDist;
             calcsForceTotal += calcsForce;
+            state.ResumeTiming();
         }
+        // Per-iteration averages and hit rate as user counters.
+        const double iters = static_cast<double>(state.iterations());
+        const double avgDist = static_cast<double>(calcsDistTotal) / iters;
+        const double avgForce = static_cast<double>(calcsForceTotal) / iters;
+        const double hitRate = avgForce / avgDist * 100.0;
 
-        std::string functorModeName;
-        switch (functorMode) {
-            case AOS: functorModeName = "AoSFunctor"; break;
-            case SOASINGLE: functorModeName = "SoAFunctorSingle"; break;
-            case SOAPAIR: functorModeName = "SoAFunctorPair"; break;
-            case SOATRIPLE: functorModeName = "SoAFunctorTriple"; break;
-            default: functorModeName = "unknown"; break;
-        }
-        std::cout << "\n------\nStatistics for " << functorModeName << "\n";
-
-        printTimers(calcsDistTotal, calcsForceTotal);
-
-        std::cout << "Average Hit Rate     : " << static_cast<double>(calcsForceTotal) / static_cast<double>(calcsDistTotal) * 100 << " %\n"
-                  << "# of Interactions    : " << calcsForceTotal / iterations << "\n";
+        using benchmark::Counter;
+        state.counters["HitRate [%]"] = hitRate;
+        state.counters["Time per Triplet"] = Counter(avgDist, Counter::kIsRate | Counter::kInvert, Counter::OneK::kIs1000);
+        state.counters["Time per Interaction"] = Counter(avgForce, Counter::kIsRate | Counter::kInvert, Counter::OneK::kIs1000);;
     }
+};
+
+BENCHMARK_F(FunctorTestFixture, AoS)(benchmark::State& state) {
+    runBenchmarkForFunctorMode(state, FunctorMode::AOS);
 }
+
+BENCHMARK_F(FunctorTestFixture, SoASingle)(benchmark::State& state) {
+    runBenchmarkForFunctorMode(state, FunctorMode::SOASINGLE);
+}
+
+BENCHMARK_F(FunctorTestFixture, SoAPair)(benchmark::State& state) {
+    runBenchmarkForFunctorMode(state, FunctorMode::SOAPAIR);
+}
+
+BENCHMARK_F(FunctorTestFixture, SoATriple)(benchmark::State& state) {
+    runBenchmarkForFunctorMode(state, FunctorMode::SOATRIPLE);
+}
+
+BENCHMARK_MAIN();
