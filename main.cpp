@@ -36,34 +36,8 @@ double distSquared(std::array<double, 3> a, std::array<double, 3> b) {
     return dot(c, c);           // 3+2=5 FLOPs
 }
 
-std::map<std::string, autopas::utils::Timer> timer{
-        {"Initialization",          autopas::utils::Timer()},
-        {"Functor",      autopas::utils::Timer()},
-        {"Output",                  autopas::utils::Timer()},
-        {"InteractionCounter",      autopas::utils::Timer()},
-};
-
-void printTimers(const size_t numTriplets, const size_t numInteractions) {
-    auto printTimer = [&] (const auto &name, const double time, const std::string &unit = "ms") {
-        std::cout
-                << std::setw(20)
-                << std::left
-                << name
-                << " : "
-                << std::setprecision(3)
-                << std::setw(8)
-                << time
-                << " [" << unit << "]\n";
-    };
-    printTimer("Total Time", static_cast<double>(timer.at("Functor").getTotalTime()) * 1e-9, "s");
-    printTimer("Time per Triplet", static_cast<double>(timer.at("Functor").getTotalTime()) / numTriplets, "ns");
-    printTimer("Time per Interaction", static_cast<double>(timer.at("Functor").getTotalTime()) / numInteractions, "ns");
-
-}
-
 void generateParticles(ATM &functor, std::vector<Cell> &cells, const size_t numberOfParticles,
     const double cellSize, const FunctorMode mode){
-    timer.at("Initialization").start();
     // generate randomly distributed particles
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -95,7 +69,6 @@ void generateParticles(ATM &functor, std::vector<Cell> &cells, const size_t numb
             functor.SoALoader(cells[0], cells[0]._particleSoABuffer, 0, false);
             break;
     }
-    timer.at("Initialization").stop();
 }
 
 void applyAoSFunctor(ATM &functor, Cell &cell) {
@@ -111,7 +84,6 @@ void applyAoSFunctor(ATM &functor, Cell &cell) {
 }
 
 void applyFunctorOnParticles(ATM &functor, std::vector<Cell> &cells, const FunctorMode mode) {
-    timer.at("Functor").start();
     switch (mode) {
         case AOS:
             applyAoSFunctor(functor, cells[0]);
@@ -126,7 +98,6 @@ void applyFunctorOnParticles(ATM &functor, std::vector<Cell> &cells, const Funct
             functor.SoAFunctorTriple(cells[0]._particleSoABuffer, cells[1]._particleSoABuffer, cells[2]._particleSoABuffer, newton3);
             break;
     }
-    timer.at("Functor").stop();
 }
 
 // void csvOutput(ATM &functor, std::vector<Cell> &cells) {
@@ -151,7 +122,6 @@ void applyFunctorOnParticles(ATM &functor, std::vector<Cell> &cells, const Funct
 // }
 
 std::tuple<size_t, size_t> countInteractions(std::vector<Cell> &cells, const double cutoff, const FunctorMode mode) {
-    timer.at("InteractionCounter").start();
     size_t calcsDist{0};
     size_t calcsForce{0};
     const auto cutoffSquared{cutoff * cutoff};
@@ -208,7 +178,6 @@ std::tuple<size_t, size_t> countInteractions(std::vector<Cell> &cells, const dou
         default:
             break;
     }
-    timer.at("InteractionCounter").stop();
     return {calcsDist, calcsForce};
 }
 
