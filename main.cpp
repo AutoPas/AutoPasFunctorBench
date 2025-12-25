@@ -231,12 +231,19 @@ void registerOneBenchmark(const std::string& functorName, const std::string& mod
     benchmark::RegisterBenchmark(
             "BM_" + functorName + "_" + modeName,
             [=](benchmark::State& state) { BM_Functor<FunctorType>(state, functorMode, newton3); })
-        ->RangeMultiplier(2)->Ranges({{4, 32}, {3, 3}, {3, 3}});
+        ->RangeMultiplier(2)->Ranges({{1, 512}, {3, 3}, {3, 3}});
 }
 
 
 void RegisterFunctorBenchmarks()
 {
+
+    std::cout << "==========================================" << std::endl;
+    std::cout << "AutoPas Functor Benchmark" << std::endl;
+    std::cout << "AutoPas Branch: " << AUTOPAS_BRANCH    << std::endl;
+    std::cout << "AutoPas Commit: " << AUTOPAS_COMMIT    << std::endl;
+    std::cout << "==========================================" << std::endl;
+
     // some constants that define the benchmark
     constexpr bool mixing{false};
     constexpr autopas::FunctorN3Modes functorN3Modes{autopas::FunctorN3Modes::Both};
@@ -244,7 +251,7 @@ void RegisterFunctorBenchmarks()
     constexpr bool newton3{true};
 
     using ATM = mdLib::AxilrodTellerMutoFunctor<Particle, mixing, functorN3Modes, globals>;
-    using ATM2 = mdLib::AxilrodTellerMutoFunctor<Particle, mixing, functorN3Modes, true>;
+    using ATMGlobals = mdLib::AxilrodTellerMutoFunctor<Particle, mixing, functorN3Modes, true>;
 
     const std::array modes = {
         std::make_pair("AoS", AOS),
@@ -256,10 +263,20 @@ void RegisterFunctorBenchmarks()
     for (const auto& [modeName, mode] : modes)
     {
         registerOneBenchmark<ATM>("ATM", modeName, mode, newton3);
-        registerOneBenchmark<ATM2>("ATM2", modeName, mode, newton3);
+        registerOneBenchmark<ATMGlobals>("ATMGlobals", modeName, mode, newton3);
     }
 }
 
 // before BENCHMARK_MAIN()
 static bool registerAll = (RegisterFunctorBenchmarks(), true);
-BENCHMARK_MAIN();
+int main(int argc, char** argv) {
+    // Add the version info to the JSON metadata
+    benchmark::AddCustomContext("autopas_branch", AUTOPAS_BRANCH);
+    benchmark::AddCustomContext("autopas_commit", AUTOPAS_COMMIT);
+
+    benchmark::Initialize(&argc, argv);
+    if (benchmark::ReportUnrecognizedArguments(argc, argv)) return 1;
+    benchmark::RunSpecifiedBenchmarks();
+    benchmark::Shutdown();
+    return 0;
+}

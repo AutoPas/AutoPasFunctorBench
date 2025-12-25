@@ -15,3 +15,9 @@ target_link_libraries(AutoPasFunctorValidation
         autopas
         molecularDynamicsLibrary
         )
+
+# Pass autopas info to C++ code via a macro
+target_compile_definitions(AutoPasFunctorValidation PRIVATE
+        AUTOPAS_BRANCH="${AUTOPAS_BRANCH}"
+        AUTOPAS_COMMIT="${AUTOPAS_COMMIT_HASH}"
+)
