@@ -6,10 +6,21 @@
 
 #include <autopas/cells/FullParticleCell.h>
 #include <random>
+#include <CLI/CLI.hpp>
 
 // type aliases for ease of use
 using Particle = mdLib::MoleculeLJ;
 using Cell = autopas::FullParticleCell<Particle>;
+
+struct BenchmarkConfig {
+    int64_t minParticles = 1;
+    int64_t maxParticles = 512;
+    int64_t cellSize = 3;
+    int64_t cutoff = 3;
+    std::string targetFunctor = "all";
+    std::string targetMode = "all";
+    bool newton3 = true;
+};
 
 enum FunctorMode
 {
@@ -190,26 +201,39 @@ static void BM_Functor(benchmark::State& state, FunctorMode functorMode, bool ne
 
     std::size_t calcsDistTotal = 0;
     std::size_t calcsForceTotal = 0;
+    const size_t poolSize = 1000;
+    std::vector<std::vector<Cell>> cellPool(poolSize, std::vector<Cell>{3});
+
+    for (auto& cells : cellPool) {
+        generateParticles(functor, cells, numParticles, cellSize, functorMode);
+    }
+
+    size_t pool_index = 0;
 
     for (auto _ : state)
     {
-        state.PauseTiming();
-        std::vector<Cell> cells{3};
-        generateParticles(functor, cells, numParticles, cellSize, functorMode);
-        state.ResumeTiming();
+        auto& currentCells = cellPool[pool_index];
 
-        applyFunctorOnParticles(functor, cells, functorMode, newton3);
+        applyFunctorOnParticles(functor, currentCells, functorMode, newton3);
 
-        state.PauseTiming();
-        const auto [calcsDist, calcsForce] = countInteractions(cells, cutoff, functorMode);
+        pool_index = (pool_index + 1) % poolSize;
+    }
+
+    state.SetComplexityN(numParticles);
+
+    const auto iters = static_cast<double>(state.iterations());
+    const auto avg = std::min(5.0, iters);
+    // Count interactions for first 5 or less cells
+    for (auto i = 0; i < avg; i++)
+    {
+        const auto [calcsDist, calcsForce] = countInteractions(cellPool[i], cutoff, functorMode);
         calcsDistTotal += calcsDist;
         calcsForceTotal += calcsForce;
-        state.ResumeTiming();
     }
+
     // Per-iteration averages and hit rate as user counters.
-    const auto iters = static_cast<double>(state.iterations());
-    const double avgDist = static_cast<double>(calcsDistTotal) / iters;
-    const double avgForce = static_cast<double>(calcsForceTotal) / iters;
+    const double avgDist = static_cast<double>(calcsDistTotal) / avg;
+    const double avgForce = static_cast<double>(calcsForceTotal) / avg;
     const double hitRate = avgForce / avgDist * 100.0;
 
     using benchmark::Counter;
@@ -226,16 +250,16 @@ static void BM_Functor(benchmark::State& state, FunctorMode functorMode, bool ne
 
 template <typename FunctorType>
 void registerOneBenchmark(const std::string& functorName, const std::string& modeName, FunctorMode functorMode,
-                          bool newton3)
+                          const BenchmarkConfig& config)
 {
     benchmark::RegisterBenchmark(
             "BM_" + functorName + "_" + modeName,
-            [=](benchmark::State& state) { BM_Functor<FunctorType>(state, functorMode, newton3); })
-        ->RangeMultiplier(2)->Ranges({{1, 512}, {3, 3}, {3, 3}});
+            [=](benchmark::State& state) { BM_Functor<FunctorType>(state, functorMode, config.newton3); })
+        ->RangeMultiplier(2)->Ranges({{config.minParticles, config.maxParticles}, {config.cellSize, config.cellSize}, {config.cutoff, config.cutoff}});
 }
 
 
-void RegisterFunctorBenchmarks()
+void RegisterFunctorBenchmarks(const BenchmarkConfig& config)
 {
 
     std::cout << "==========================================" << std::endl;
@@ -248,7 +272,6 @@ void RegisterFunctorBenchmarks()
     constexpr bool mixing{false};
     constexpr autopas::FunctorN3Modes functorN3Modes{autopas::FunctorN3Modes::Both};
     constexpr bool globals{false};
-    constexpr bool newton3{true};
 
     using ATM = mdLib::AxilrodTellerMutoFunctor<Particle, mixing, functorN3Modes, globals>;
     using ATMGlobals = mdLib::AxilrodTellerMutoFunctor<Particle, mixing, functorN3Modes, true>;
@@ -262,20 +285,70 @@ void RegisterFunctorBenchmarks()
 
     for (const auto& [modeName, mode] : modes)
     {
-        registerOneBenchmark<ATM>("ATM", modeName, mode, newton3);
-        registerOneBenchmark<ATMGlobals>("ATMGlobals", modeName, mode, newton3);
+        if (config.targetMode != "all" && config.targetMode != modeName)
+        {
+            continue;
+        }
+        if (config.targetFunctor == "all" || config.targetFunctor == "ATM")
+        {
+            registerOneBenchmark<ATM>("ATM", modeName, mode, config);
+        }
+        if (config.targetFunctor == "all" || config.targetFunctor == "ATMGlobals") {
+            registerOneBenchmark<ATMGlobals>("ATMGlobals", modeName, mode, config);
+        }
     }
 }
 
-// before BENCHMARK_MAIN()
-static bool registerAll = (RegisterFunctorBenchmarks(), true);
+void setupCLI(CLI::App& app, BenchmarkConfig& config) {
+    app.add_option("--min", config.minParticles, "Minimum number of particles")->default_val(1);
+    app.add_option("--max", config.maxParticles, "Maximum number of particles")->default_val(512);
+    app.add_option("-c,--cell-size", config.cellSize, "Size of the simulation cell")->default_val(3);
+    app.add_option("-r,--cutoff", config.cutoff, "Cutoff radius for interactions")->default_val(3);
+
+    app.add_option("-f,--functor", config.targetFunctor, "Which functor to test")
+       ->check(CLI::IsMember({"ATM", "ATMGlobals", "all"}, CLI::ignore_case))
+       ->default_val("all");
+
+    app.add_option("-m,--mode", config.targetMode, "Which data layout mode to test")
+       ->check(CLI::IsMember({"AoS", "SoASingle", "SoAPair", "SoATriple", "all"}, CLI::ignore_case))
+       ->default_val("all");
+
+    app.add_flag("--n3,!--no-n3", config.newton3, "Enable/Disable Newton3 (enabled by default)");
+}
+
+bool handleHelpFlag(int argc, char** argv, const CLI::App& app) {
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "-h" || arg == "--help") {
+            std::cout << app.help() << "\n";
+            std::cout << "--- Google Benchmark Options ---\n";
+            return true;
+        }
+    }
+    return false;
+}
+
 int main(int argc, char** argv) {
     // Add the version info to the JSON metadata
     benchmark::AddCustomContext("autopas_branch", AUTOPAS_BRANCH);
     benchmark::AddCustomContext("autopas_commit", AUTOPAS_COMMIT);
 
+
+    // Read CLI arguments
+    CLI::App app{"AutoPas 3-Body Functor Benchmark"};
+    BenchmarkConfig config;
+    setupCLI(app, config);
+
+    if (handleHelpFlag(argc, argv, app)) {
+        benchmark::Initialize(&argc, argv);
+        return 0;
+    }
+
     benchmark::Initialize(&argc, argv);
-    if (benchmark::ReportUnrecognizedArguments(argc, argv)) return 1;
+    CLI11_PARSE(app, argc, argv);
+
+    RegisterFunctorBenchmarks(config);
+
     benchmark::RunSpecifiedBenchmarks();
     benchmark::Shutdown();
     return 0;
