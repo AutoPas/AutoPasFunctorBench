@@ -13,7 +13,7 @@ endif ()
 FetchContent_Declare(
         autopasfetch
         GIT_REPOSITORY ${autopasRepoPath}
-        GIT_TAG 5212d13 # Name of the branch with functor to test
+        GIT_TAG feature/3xa/atm-soa # Name of the branch with functor to test
 )
 # Populate dependency
 FetchContent_MakeAvailable(autopasfetch)
