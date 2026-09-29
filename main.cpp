@@ -8,6 +8,10 @@
 #include <autopas/cells/FullParticleCell.h>
 #include <random>
 #include <CLI/CLI.hpp>
+#include <unordered_map>
+#include <functional>
+#include <algorithm>
+#include <cctype>
 
 // type aliases for ease of use
 using Particle = mdLib::MoleculeLJ;
@@ -199,16 +203,14 @@ std::tuple<size_t, size_t> countInteractions(std::vector<Cell>& cells, const dou
 }
 
 
-template <typename FunctorType>
-static void BM_Functor(benchmark::State& state, FunctorMode functorMode, bool newton3, uint32_t seed)
+template <typename FunctorType, typename Factory>
+static void BM_Functor(benchmark::State& state, Factory factory, FunctorMode functorMode, bool newton3, uint32_t seed)
 {
     const auto numParticles = static_cast<size_t>(state.range(0));
     const auto cellSize = static_cast<double>(state.range(1));
     const auto cutoff = static_cast<double>(state.range(2));
-    constexpr double nu{1.0};
 
-    FunctorType functor{cutoff};
-    functor.setParticleProperties(nu);
+    auto functor = factory(cutoff);
 
     std::size_t calcsDistTotal = 0;
     std::size_t calcsForceTotal = 0;
@@ -265,24 +267,89 @@ static void BM_Functor(benchmark::State& state, FunctorMode functorMode, bool ne
     state.SetItemsProcessed(static_cast<int64_t>(avgDist * iters));
 }
 
-template <typename FunctorType>
-void registerOneBenchmark(const std::string& functorName, const std::string& modeName, FunctorMode functorMode,
-                          const BenchmarkConfig& config)
-{
-    benchmark::RegisterBenchmark(
-            "BM_" + functorName + "_" + modeName,
-            [=](benchmark::State& state) { BM_Functor<FunctorType>(state, functorMode, config.newton3, config.seed); })
-        ->RangeMultiplier(2)->Ranges({{config.minParticles, config.maxParticles}, {config.cellSize, config.cellSize}, {config.cutoff, config.cutoff}});
+struct FunctorInfo {
+    std::string name;
+    std::string description;
+    std::function<void(const std::string& modeName, FunctorMode mode, const BenchmarkConfig& config)> registerBenchmark;
+    std::function<void(std::vector<Cell>& cells, FunctorMode mode, bool newton3, double cutoff)> runOnce;
+};
+
+class FunctorRegistry {
+public:
+    template <typename FunctorType, typename Factory>
+    void registerFunctor(const std::string& name, const std::string& description, Factory functorFactory) {
+        FunctorInfo info;
+        info.name = name;
+        info.description = description;
+
+        info.registerBenchmark = [name, functorFactory](const std::string& modeName, FunctorMode mode, const BenchmarkConfig& config) {
+            benchmark::RegisterBenchmark(
+                "BM_" + name + "_" + modeName,
+                [=](benchmark::State& state) {
+                    BM_Functor<FunctorType>(state, functorFactory, mode, config.newton3, config.seed);
+                })
+                ->RangeMultiplier(2)
+                ->Ranges({{config.minParticles, config.maxParticles},
+                          {config.cellSize, config.cellSize},
+                          {config.cutoff, config.cutoff}});
+        };
+
+        info.runOnce = [functorFactory](std::vector<Cell>& cells, FunctorMode mode, bool newton3, double cutoff) {
+            auto functor = functorFactory(cutoff);
+            for (auto& cell : cells) {
+                functor.SoALoader(cell, cell._particleSoABuffer, 0, false);
+            }
+            applyFunctorOnParticles(functor, cells, mode, newton3);
+            for (auto& cell : cells) {
+                functor.SoAExtractor(cell, cell._particleSoABuffer, 0);
+            }
+        };
+
+        _functors[name] = std::move(info);
+        _names.push_back(name);
+    }
+
+    const std::vector<std::string>& getNames() const { return _names; }
+
+    bool has(const std::string& name) const {
+        return _functors.find(name) != _functors.end();
+    }
+
+    const FunctorInfo& get(const std::string& name) const {
+        return _functors.at(name);
+    }
+
+private:
+    std::unordered_map<std::string, FunctorInfo> _functors;
+    std::vector<std::string> _names;
+};
+
+void initRegistry(FunctorRegistry& reg) {
+    reg.registerFunctor<ATM>("ATM", "Axilrod-Teller-Muto Reference Functor", [](const double cutoff) {
+        ATM f{cutoff};
+        f.setParticleProperties(1.0);
+        return f;
+    });
+
+    reg.registerFunctor<ATM2>("ATM2", "Axilrod-Teller-Muto Variation", [](const double cutoff) {
+        ATM2 f{cutoff};
+        f.setParticleProperties(1.0);
+        return f;
+    });
+
+    reg.registerFunctor<ATMGlobals>("ATMGlobals", "ATM Functor with Globals calculation", [](const double cutoff) {
+        ATMGlobals f{cutoff};
+        f.setParticleProperties(1.0);
+        return f;
+    });
 }
 
-
-void registerFunctors(const BenchmarkConfig& config)
+void registerFunctors(const BenchmarkConfig& config, const FunctorRegistry& registry)
 {
-
     std::cout << "==========================================" << std::endl;
     std::cout << "AutoPas Functor Benchmark" << std::endl;
-    std::cout << "AutoPas Branch: " << AUTOPAS_BRANCH    << std::endl;
-    std::cout << "AutoPas Commit: " << AUTOPAS_COMMIT    << std::endl;
+    std::cout << "AutoPas Branch: " << AUTOPAS_BRANCH << std::endl;
+    std::cout << "AutoPas Commit: " << AUTOPAS_COMMIT << std::endl;
     std::cout << "==========================================" << std::endl;
 
     constexpr std::array modes = {
@@ -292,43 +359,88 @@ void registerFunctors(const BenchmarkConfig& config)
         std::make_pair("SoATriple", SOATRIPLE)
     };
 
-    bool allowAllModes = std::ranges::find(config.targetModes, "all") != config.targetModes.end();
+    auto stringsAreEqual = [](const std::string& a, const std::string& b) {
+        return std::ranges::equal(a, b,
+                                  [](const char ca, const char cb) { return std::tolower(static_cast<unsigned char>(ca)) == std::tolower(static_cast<unsigned char>(cb)); });
+    };
 
-    for (const auto&functorName : config.targetFunctors) {
-        for (const auto& [modeName, mode] : modes)
-        {
-            bool thisModeRequested = std::ranges::find(config.targetModes, modeName) != config.targetModes.end();
-            if (!allowAllModes && !thisModeRequested) continue;
+    // Resolve the requested functors
+    std::vector<std::string> requestedFunctors;
+    bool allFunctorsRequested = false;
+    for (const auto& functor : config.targetFunctors) {
+        if (stringsAreEqual(functor, "all")) {
+            allFunctorsRequested = true;
+            break;
+        }
+    }
 
-            // Register Original
-            if (functorName == "all" || functorName == "ATM") {
-                registerOneBenchmark<ATM>("ATM", modeName, mode, config);
+    if (allFunctorsRequested) {
+        for (const auto& functorName : registry.getNames()) {
+            requestedFunctors.push_back(functorName);
+        }
+    } else {
+        for (const auto& requestedFunctor : config.targetFunctors) {
+            for (const auto& functorName : registry.getNames()) {
+                if (stringsAreEqual(requestedFunctor, functorName)) {
+                    if (std::ranges::find(requestedFunctors, functorName) == requestedFunctors.end()) {
+                        requestedFunctors.push_back(functorName);
+                    }
+                }
             }
+        }
+    }
 
-            // Register Challenger
-            if (functorName == "all" || functorName == "ATM2") {
-                registerOneBenchmark<ATM2>("ATM2", modeName, mode, config);
+    // Resolve requested functor modes
+    std::vector<std::pair<std::string, FunctorMode>> requestedModes;
+    bool allModesRequested = false;
+    for (const auto& functorMode : config.targetModes) {
+        if (stringsAreEqual(functorMode, "all")) {
+            allModesRequested = true;
+            break;
+        }
+    }
+
+    if (allModesRequested) {
+        for (const auto& mode : modes) {
+            requestedModes.emplace_back(mode);
+        }
+    } else {
+        for (const auto& requestedMode : config.targetModes) {
+            for (const auto& [modeName, functorMode] : modes) {
+                if (stringsAreEqual(requestedMode, modeName)) {
+                    auto it = std::ranges::find_if(requestedModes,
+                                                   [&](const auto& pair) { return pair.second == functorMode; });
+                    if (it == requestedModes.end()) {
+                        requestedModes.emplace_back(modeName, functorMode);
+                    }
+                }
             }
+        }
+    }
+
+    // Register each (functor, mode) pair cleanly
+    for (const auto& functorName : requestedFunctors) {
+        if (!registry.has(functorName)) continue;
+        const auto& info = registry.get(functorName);
+        for (const auto& [modeName, mode] : requestedModes) {
+            info.registerBenchmark(modeName, mode, config);
         }
     }
 }
 
-// template <typename... Functors>
-// void registerAllFunctors(const BenchmarkConfig& config)
-// {
-//     (registerModesForFunctor<Functors>(config), ...);
-// }
-
-void setupCLI(CLI::App& app, BenchmarkConfig& config) {
+void setupCLI(CLI::App& app, BenchmarkConfig& config, const FunctorRegistry& registry) {
     app.add_option("--min", config.minParticles, "Minimum number of particles")->default_val(1);
     app.add_option("--max", config.maxParticles, "Maximum number of particles")->default_val(512);
     app.add_option("-c,--cell-size", config.cellSize, "Size of the simulation cell")->default_val(3);
     app.add_option("-r,--cutoff", config.cutoff, "Cutoff radius for interactions")->default_val(3);
     app.add_option("-s,--seed", config.seed, "Random seed for reproducible particle generation")->default_val(42);
 
+    auto validFunctors = registry.getNames();
+    validFunctors.emplace_back("all");
+
     app.add_option("-f,--functor", config.targetFunctors, "Comma-separated list of functors to test")
-           ->check(CLI::IsMember({"ATM", "ATMGlobals", "ATM2", "all"}, CLI::ignore_case))
-           ->delimiter(','); // <--- This enables the comma splitting!
+           ->check(CLI::IsMember(validFunctors, CLI::ignore_case))
+           ->delimiter(',');
 
     app.add_option("-m,--mode", config.targetModes, "Comma-separated list of modes to test")
        ->check(CLI::IsMember({"AoS", "SoASingle", "SoAPair", "SoATriple", "all"}, CLI::ignore_case))
@@ -355,10 +467,14 @@ int main(int argc, char** argv) {
     benchmark::AddCustomContext("autopas_commit", AUTOPAS_COMMIT);
     benchmark::MaybeReenterWithoutASLR(argc, argv);
 
+    // Initialize Functor Registry
+    FunctorRegistry registry;
+    initRegistry(registry);
+
     // Read CLI arguments
     CLI::App app{"AutoPas 3-Body Functor Benchmark"};
     BenchmarkConfig config;
-    setupCLI(app, config);
+    setupCLI(app, config, registry);
 
     if (handleHelpFlag(argc, argv, app)) {
         benchmark::Initialize(&argc, argv);
@@ -368,7 +484,7 @@ int main(int argc, char** argv) {
     benchmark::Initialize(&argc, argv);
     CLI11_PARSE(app, argc, argv);
 
-    registerFunctors(config);
+    registerFunctors(config, registry);
 
     benchmark::RunSpecifiedBenchmarks();
     benchmark::Shutdown();
