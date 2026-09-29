@@ -18,6 +18,8 @@ target_link_libraries(AP_Functor_Bench
         molecularDynamicsLibrary
         )
 
+target_include_directories(AP_Functor_Bench PRIVATE functor-variants)
+
 # Pass autopas info to C++ code via a macro
 target_compile_definitions(AP_Functor_Bench PRIVATE
         AUTOPAS_BRANCH="${AUTOPAS_BRANCH}"

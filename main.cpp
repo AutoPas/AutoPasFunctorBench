@@ -2,6 +2,7 @@
 
 #include <molecularDynamicsLibrary/MoleculeLJ.h>
 #include <molecularDynamicsLibrary/AxilrodTellerMutoFunctor.h>
+#include <AxilrodTellerMutoFunctor2.h>
 #include "benchmark/benchmark.h"
 
 #include <autopas/cells/FullParticleCell.h>
@@ -12,14 +13,23 @@
 using Particle = mdLib::MoleculeLJ;
 using Cell = autopas::FullParticleCell<Particle>;
 
+// some constants that define the benchmark
+constexpr bool mixing{false};
+constexpr autopas::FunctorN3Modes functorN3Modes{autopas::FunctorN3Modes::Both};
+constexpr bool globals{false};
+using ATM = mdLib::AxilrodTellerMutoFunctor<Particle, mixing, functorN3Modes, globals>;
+using ATMGlobals = mdLib::AxilrodTellerMutoFunctor<Particle, mixing, functorN3Modes, true>;
+using ATM2 = mdLib::AxilrodTellerMutoFunctor2<Particle, mixing, functorN3Modes, globals>;
+
 struct BenchmarkConfig {
     int64_t minParticles = 1;
     int64_t maxParticles = 512;
     int64_t cellSize = 3;
     int64_t cutoff = 3;
-    std::string targetFunctor = "all";
-    std::string targetMode = "all";
+    std::vector<std::string> targetFunctors = {"all"};
+    std::vector<std::string> targetModes = {"all"};
     bool newton3 = true;
+    uint32_t seed = 42;
 };
 
 enum FunctorMode
@@ -30,7 +40,7 @@ enum FunctorMode
     SOATRIPLE
 };
 
-double distSquared(std::array<double, 3> a, std::array<double, 3> b)
+double distSquared(const std::array<double, 3> &a, const std::array<double, 3> &b)
 {
     using autopas::utils::ArrayMath::sub;
     using autopas::utils::ArrayMath::dot;
@@ -40,21 +50,20 @@ double distSquared(std::array<double, 3> a, std::array<double, 3> b)
 
 template <typename FunctorType>
 void generateParticles(FunctorType& functor, std::vector<Cell>& cells, const size_t numberOfParticles,
-                       const double cellSize, const FunctorMode mode)
+                       const double cellSize, const FunctorMode mode, const uint32_t seed)
 {
-    // generate randomly distributed particles
-    std::random_device rd;
-    std::mt19937 gen(rd());
+    // generate randomly distributed particles with deterministic seed
+    std::mt19937 gen(seed);
     std::uniform_real_distribution<double> dis(0.0, cellSize);
 
-    auto fillCellWithParticles = [&](Cell& cell, double xShift, double yShift, double zShift)
+    auto fillCellWithParticles = [&](Cell& cell, const double xShift, const double yShift, const double zShift, const size_t startId)
     {
-        for (size_t particleId = 0; particleId < numberOfParticles; ++particleId)
+        for (size_t i = 0; i < numberOfParticles; ++i)
         {
             Particle p{
-                {dis(gen) + xShift, dis(gen) + yShift, dis(gen)},
-                {0., 0., 0.,},
-                particleId,
+                {dis(gen) + xShift, dis(gen) + yShift, dis(gen) + zShift},
+                {0., 0., 0.},
+                startId + i,
                 0
             };
             cell.addParticle(p); // Add particle to the current cell
@@ -63,16 +72,18 @@ void generateParticles(FunctorType& functor, std::vector<Cell>& cells, const siz
     switch (mode)
     {
     case AOS:
-        fillCellWithParticles(cells[0], 0., 0., 0.);
+        fillCellWithParticles(cells[0], 0., 0., 0., 0);
         break;
     case SOATRIPLE:
-        fillCellWithParticles(cells[2], 0., cellSize, 0.);
+        fillCellWithParticles(cells[2], 0., cellSize, 0., 2 * numberOfParticles);
         functor.SoALoader(cells[2], cells[2]._particleSoABuffer, 0, false);
+        [[fallthrough]];
     case SOAPAIR:
-        fillCellWithParticles(cells[1], cellSize, 0., 0.);
+        fillCellWithParticles(cells[1], cellSize, 0., 0., numberOfParticles);
         functor.SoALoader(cells[1], cells[1]._particleSoABuffer, 0, false);
+        [[fallthrough]];
     case SOASINGLE:
-        fillCellWithParticles(cells[0], 0., 0., 0.);
+        fillCellWithParticles(cells[0], 0., 0., 0., 0);
         functor.SoALoader(cells[0], cells[0]._particleSoABuffer, 0, false);
         break;
     }
@@ -189,23 +200,23 @@ std::tuple<size_t, size_t> countInteractions(std::vector<Cell>& cells, const dou
 
 
 template <typename FunctorType>
-static void BM_Functor(benchmark::State& state, FunctorMode functorMode, bool newton3)
+static void BM_Functor(benchmark::State& state, FunctorMode functorMode, bool newton3, uint32_t seed)
 {
     const auto numParticles = static_cast<size_t>(state.range(0));
     const auto cellSize = static_cast<double>(state.range(1));
     const auto cutoff = static_cast<double>(state.range(2));
-    const double nu{1.0};
+    constexpr double nu{1.0};
 
     FunctorType functor{cutoff};
     functor.setParticleProperties(nu);
 
     std::size_t calcsDistTotal = 0;
     std::size_t calcsForceTotal = 0;
-    const size_t poolSize = 1000;
+    constexpr size_t poolSize = 1000;
     std::vector<std::vector<Cell>> cellPool(poolSize, std::vector<Cell>{3});
 
-    for (auto& cells : cellPool) {
-        generateParticles(functor, cells, numParticles, cellSize, functorMode);
+    for (size_t poolIdx = 0; poolIdx < cellPool.size(); ++poolIdx) {
+        generateParticles(functor, cellPool[poolIdx], numParticles, cellSize, functorMode, seed + static_cast<uint32_t>(poolIdx));
     }
 
     size_t pool_index = 0;
@@ -223,7 +234,7 @@ static void BM_Functor(benchmark::State& state, FunctorMode functorMode, bool ne
 
     const auto iters = static_cast<double>(state.iterations());
     const auto avg = std::min(5.0, iters);
-    // Count interactions for first 5 or less cells
+    // Count interactions for first 5 or fewer cells
     for (auto i = 0; i < avg; i++)
     {
         const auto [calcsDist, calcsForce] = countInteractions(cellPool[i], cutoff, functorMode);
@@ -234,18 +245,24 @@ static void BM_Functor(benchmark::State& state, FunctorMode functorMode, bool ne
     // Per-iteration averages and hit rate as user counters.
     const double avgDist = static_cast<double>(calcsDistTotal) / avg;
     const double avgForce = static_cast<double>(calcsForceTotal) / avg;
-    const double hitRate = avgForce / avgDist * 100.0;
+    const double hitRate = (avgDist > 0.0) ? (avgForce / avgDist * 100.0) : 0.0;
 
     using benchmark::Counter;
-    auto roundToPrecision = [](double x, unsigned int precision)
+    auto roundToPrecision = [](const double x, const unsigned int precision)
     {
         return std::round(x * std::pow(10, precision)) / std::pow(10, precision);
     };
     state.counters["HitRate [%]"] = roundToPrecision(hitRate, 2);
-    state.counters["Time per Triplet"] = Counter(avgDist, Counter::kIsRate | Counter::kInvert, Counter::OneK::kIs1000);
-    state.counters["Time per Interaction"] = Counter(avgForce, Counter::kIsRate | Counter::kInvert,
-                                                     Counter::OneK::kIs1000);;
     state.counters["# of Triplets"] = avgDist;
+    if (avgDist > 0.0) {
+        state.counters["Time per Triplet"] = Counter(avgDist, Counter::kIsIterationInvariantRate | Counter::kInvert, Counter::OneK::kIs1000);
+        state.counters["Triplets/s"] = Counter(avgDist, Counter::kIsIterationInvariantRate, Counter::OneK::kIs1000);
+    }
+    if (avgForce > 0.0) {
+        state.counters["Time per Interaction"] = Counter(avgForce, Counter::kIsIterationInvariantRate | Counter::kInvert, Counter::OneK::kIs1000);
+        state.counters["Interactions/s"] = Counter(avgForce, Counter::kIsIterationInvariantRate, Counter::OneK::kIs1000);
+    }
+    state.SetItemsProcessed(static_cast<int64_t>(avgDist * iters));
 }
 
 template <typename FunctorType>
@@ -254,12 +271,12 @@ void registerOneBenchmark(const std::string& functorName, const std::string& mod
 {
     benchmark::RegisterBenchmark(
             "BM_" + functorName + "_" + modeName,
-            [=](benchmark::State& state) { BM_Functor<FunctorType>(state, functorMode, config.newton3); })
+            [=](benchmark::State& state) { BM_Functor<FunctorType>(state, functorMode, config.newton3, config.seed); })
         ->RangeMultiplier(2)->Ranges({{config.minParticles, config.maxParticles}, {config.cellSize, config.cellSize}, {config.cutoff, config.cutoff}});
 }
 
 
-void RegisterFunctorBenchmarks(const BenchmarkConfig& config)
+void registerFunctors(const BenchmarkConfig& config)
 {
 
     std::cout << "==========================================" << std::endl;
@@ -268,55 +285,59 @@ void RegisterFunctorBenchmarks(const BenchmarkConfig& config)
     std::cout << "AutoPas Commit: " << AUTOPAS_COMMIT    << std::endl;
     std::cout << "==========================================" << std::endl;
 
-    // some constants that define the benchmark
-    constexpr bool mixing{false};
-    constexpr autopas::FunctorN3Modes functorN3Modes{autopas::FunctorN3Modes::Both};
-    constexpr bool globals{false};
-
-    using ATM = mdLib::AxilrodTellerMutoFunctor<Particle, mixing, functorN3Modes, globals>;
-    using ATMGlobals = mdLib::AxilrodTellerMutoFunctor<Particle, mixing, functorN3Modes, true>;
-
-    const std::array modes = {
+    constexpr std::array modes = {
         std::make_pair("AoS", AOS),
         std::make_pair("SoASingle", SOASINGLE),
         std::make_pair("SoAPair", SOAPAIR),
         std::make_pair("SoATriple", SOATRIPLE)
     };
 
-    for (const auto& [modeName, mode] : modes)
-    {
-        if (config.targetMode != "all" && config.targetMode != modeName)
+    bool allowAllModes = std::ranges::find(config.targetModes, "all") != config.targetModes.end();
+
+    for (const auto&functorName : config.targetFunctors) {
+        for (const auto& [modeName, mode] : modes)
         {
-            continue;
-        }
-        if (config.targetFunctor == "all" || config.targetFunctor == "ATM")
-        {
-            registerOneBenchmark<ATM>("ATM", modeName, mode, config);
-        }
-        if (config.targetFunctor == "all" || config.targetFunctor == "ATMGlobals") {
-            registerOneBenchmark<ATMGlobals>("ATMGlobals", modeName, mode, config);
+            bool thisModeRequested = std::ranges::find(config.targetModes, modeName) != config.targetModes.end();
+            if (!allowAllModes && !thisModeRequested) continue;
+
+            // Register Original
+            if (functorName == "all" || functorName == "ATM") {
+                registerOneBenchmark<ATM>("ATM", modeName, mode, config);
+            }
+
+            // Register Challenger
+            if (functorName == "all" || functorName == "ATM2") {
+                registerOneBenchmark<ATM2>("ATM2", modeName, mode, config);
+            }
         }
     }
 }
+
+// template <typename... Functors>
+// void registerAllFunctors(const BenchmarkConfig& config)
+// {
+//     (registerModesForFunctor<Functors>(config), ...);
+// }
 
 void setupCLI(CLI::App& app, BenchmarkConfig& config) {
     app.add_option("--min", config.minParticles, "Minimum number of particles")->default_val(1);
     app.add_option("--max", config.maxParticles, "Maximum number of particles")->default_val(512);
     app.add_option("-c,--cell-size", config.cellSize, "Size of the simulation cell")->default_val(3);
     app.add_option("-r,--cutoff", config.cutoff, "Cutoff radius for interactions")->default_val(3);
+    app.add_option("-s,--seed", config.seed, "Random seed for reproducible particle generation")->default_val(42);
 
-    app.add_option("-f,--functor", config.targetFunctor, "Which functor to test")
-       ->check(CLI::IsMember({"ATM", "ATMGlobals", "all"}, CLI::ignore_case))
-       ->default_val("all");
+    app.add_option("-f,--functor", config.targetFunctors, "Comma-separated list of functors to test")
+           ->check(CLI::IsMember({"ATM", "ATMGlobals", "ATM2", "all"}, CLI::ignore_case))
+           ->delimiter(','); // <--- This enables the comma splitting!
 
-    app.add_option("-m,--mode", config.targetMode, "Which data layout mode to test")
+    app.add_option("-m,--mode", config.targetModes, "Comma-separated list of modes to test")
        ->check(CLI::IsMember({"AoS", "SoASingle", "SoAPair", "SoATriple", "all"}, CLI::ignore_case))
-       ->default_val("all");
+       ->delimiter(',');
 
     app.add_flag("--n3,!--no-n3", config.newton3, "Enable/Disable Newton3 (enabled by default)");
 }
 
-bool handleHelpFlag(int argc, char** argv, const CLI::App& app) {
+bool handleHelpFlag(const int argc, char** argv, const CLI::App& app) {
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "-h" || arg == "--help") {
@@ -332,7 +353,7 @@ int main(int argc, char** argv) {
     // Add the version info to the JSON metadata
     benchmark::AddCustomContext("autopas_branch", AUTOPAS_BRANCH);
     benchmark::AddCustomContext("autopas_commit", AUTOPAS_COMMIT);
-
+    benchmark::MaybeReenterWithoutASLR(argc, argv);
 
     // Read CLI arguments
     CLI::App app{"AutoPas 3-Body Functor Benchmark"};
@@ -347,7 +368,7 @@ int main(int argc, char** argv) {
     benchmark::Initialize(&argc, argv);
     CLI11_PARSE(app, argc, argv);
 
-    RegisterFunctorBenchmarks(config);
+    registerFunctors(config);
 
     benchmark::RunSpecifiedBenchmarks();
     benchmark::Shutdown();
