@@ -8,23 +8,44 @@ build*/
 # editor stuff
 *.swp
 .idea/
-venv/
 *.timestamp
 *.synctex.gz
 .clangd/
 .cache/
 
-# benchmark output folder
+# python stuff
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+venv/
+.venv/
+env/
+
+# benchmark output and test directories
 *testTuning_*/
 *measurePerf_*/
+results/
+scratch/
+results*.json
+
+# profiling & analyzer artifacts (Intel Advisor, VTune, etc.)
+advisor_results/
+config/
+*.advixeproj
+*.advidb*
 
 # sourcetrail stuff
 *.srctrlbm
 *.srctrldb
 *.srctrlprj
 
-# simulation output
+# simulation & run outputs
 *.vtk
 *.csv
 *.out
 *.log
+
+# OS metadata
+.DS_Store
+Thumbs.db
