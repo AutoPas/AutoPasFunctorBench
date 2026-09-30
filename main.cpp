@@ -12,6 +12,8 @@
 #include <functional>
 #include <algorithm>
 #include <cctype>
+#include <iomanip>
+#include <sstream>
 
 // type aliases for ease of use
 using Particle = mdLib::MoleculeLJ;
@@ -28,12 +30,18 @@ using ATM2 = mdLib::AxilrodTellerMutoFunctor2<Particle, mixing, functorN3Modes, 
 struct BenchmarkConfig {
     int64_t minParticles = 1;
     int64_t maxParticles = 512;
-    int64_t cellSize = 3;
-    int64_t cutoff = 3;
+    double cellSize = 3;
+    double cutoff = 3;
     std::vector<std::string> targetFunctors = {"all"};
     std::vector<std::string> targetModes = {"all"};
     bool newton3 = true;
     uint32_t seed = 42;
+    bool verify = false;
+    bool verifyOnly = false;
+    int64_t verifyParticles = 16;
+    double verifyTolerance = 1e-10;
+    std::string verifyBaseline;
+    std::string verifyCandidate;
 };
 
 enum FunctorMode
@@ -296,12 +304,20 @@ public:
 
         info.runOnce = [functorFactory](std::vector<Cell>& cells, FunctorMode mode, bool newton3, double cutoff) {
             auto functor = functorFactory(cutoff);
-            for (auto& cell : cells) {
-                functor.SoALoader(cell, cell._particleSoABuffer, 0, false);
+            if (mode != AOS) {
+                for (auto& cell : cells) {
+                    if (!cell.isEmpty()) {
+                        functor.SoALoader(cell, cell._particleSoABuffer, 0, false);
+                    }
+                }
             }
             applyFunctorOnParticles(functor, cells, mode, newton3);
-            for (auto& cell : cells) {
-                functor.SoAExtractor(cell, cell._particleSoABuffer, 0);
+            if (mode != AOS) {
+                for (auto& cell : cells) {
+                    if (!cell.isEmpty()) {
+                        functor.SoAExtractor(cell, cell._particleSoABuffer, 0);
+                    }
+                }
             }
         };
 
@@ -312,7 +328,7 @@ public:
     const std::vector<std::string>& getNames() const { return _names; }
 
     bool has(const std::string& name) const {
-        return _functors.find(name) != _functors.end();
+        return _functors.contains(name);
     }
 
     const FunctorInfo& get(const std::string& name) const {
@@ -325,13 +341,13 @@ private:
 };
 
 void initRegistry(FunctorRegistry& reg) {
-    reg.registerFunctor<ATM>("ATM", "Axilrod-Teller-Muto Reference Functor", [](const double cutoff) {
+    reg.registerFunctor<ATM>("ATM", "Axilrod-Teller-Muto Baseline Functor", [](const double cutoff) {
         ATM f{cutoff};
         f.setParticleProperties(1.0);
         return f;
     });
 
-    reg.registerFunctor<ATM2>("ATM2", "Axilrod-Teller-Muto Variation", [](const double cutoff) {
+    reg.registerFunctor<ATM2>("ATM2", "Axilrod-Teller-Muto Candidate Functor", [](const double cutoff) {
         ATM2 f{cutoff};
         f.setParticleProperties(1.0);
         return f;
@@ -428,12 +444,247 @@ void registerFunctors(const BenchmarkConfig& config, const FunctorRegistry& regi
     }
 }
 
+struct VerifyResult {
+    bool passed = true;
+    double maxAbsDiff = 0.0;
+    double maxRelDiff = 0.0;
+    double maxBaselineForce = 0.0;
+    std::string firstMismatch;
+};
+
+VerifyResult verifyOneMode(const FunctorInfo& baselineInfo, const FunctorInfo& candidateInfo,
+                           const FunctorMode mode, const bool newton3, const size_t numParticles,
+                           const double cellSize, const double cutoff, const uint32_t seed, const double tolerance)
+{
+    std::vector<Cell> cellsBaseline(3);
+    std::vector<Cell> cellsCandidate(3);
+
+    std::mt19937 genBaseline(seed);
+    std::mt19937 genCandidate(seed);
+    std::uniform_real_distribution<double> dis(0.0, cellSize);
+
+    auto fillCells = [&](std::vector<Cell>& cells, std::mt19937& gen) {
+        auto fillCell = [&](Cell& cell, const double xShift, const double yShift, const double zShift, const size_t startId) {
+            for (size_t i = 0; i < numParticles; ++i) {
+                Particle p{
+                    {dis(gen) + xShift, dis(gen) + yShift, dis(gen) + zShift},
+                    {0., 0., 0.},
+                    startId + i,
+                    0
+                };
+                cell.addParticle(p);
+            }
+        };
+
+        switch (mode) {
+        case AOS:
+        case SOASINGLE:
+            fillCell(cells[0], 0., 0., 0., 0);
+            break;
+        case SOAPAIR:
+            fillCell(cells[0], 0., 0., 0., 0);
+            fillCell(cells[1], cellSize, 0., 0., numParticles);
+            break;
+        case SOATRIPLE:
+            fillCell(cells[0], 0., 0., 0., 0);
+            fillCell(cells[1], cellSize, 0., 0., numParticles);
+            fillCell(cells[2], 0., cellSize, 0., 2 * numParticles);
+            break;
+        }
+    };
+
+    fillCells(cellsBaseline, genBaseline);
+    fillCells(cellsCandidate, genCandidate);
+
+    baselineInfo.runOnce(cellsBaseline, mode, newton3, cutoff);
+    candidateInfo.runOnce(cellsCandidate, mode, newton3, cutoff);
+
+    VerifyResult res;
+    for (size_t c = 0; c < cellsBaseline.size(); ++c) {
+        for (size_t p = 0; p < cellsBaseline[c].size(); ++p) {
+            const auto fBaseline = cellsBaseline[c][p].getF();
+            const auto fCandidate = cellsCandidate[c][p].getF();
+
+            for (int d = 0; d < 3; ++d) {
+                const double baselineVal = fBaseline[d];
+                const double candidateVal = fCandidate[d];
+                res.maxBaselineForce = std::max(res.maxBaselineForce, std::abs(baselineVal));
+
+                double diff = std::abs(baselineVal - candidateVal);
+                if (std::isnan(diff) || std::isinf(diff)) {
+                    res.passed = false;
+                    res.firstMismatch = "NaN or Inf in force values!";
+                    return res;
+                }
+
+                res.maxAbsDiff = std::max(res.maxAbsDiff, diff);
+                const double denom = std::max(std::abs(baselineVal), std::abs(candidateVal));
+                if (denom > 1e-12) {
+                    res.maxRelDiff = std::max(res.maxRelDiff, diff / denom);
+                }
+
+                if (diff > tolerance && res.firstMismatch.empty()) {
+                    std::ostringstream ss;
+                    ss << "Cell " << c << ", Particle " << p
+                       << ", Dim " << (d == 0 ? "X" : (d == 1 ? "Y" : "Z"))
+                       << ": Baseline=" << baselineVal << ", Candidate=" << candidateVal
+                       << " (Diff=" << diff << ")";
+                    res.firstMismatch = ss.str();
+                }
+            }
+        }
+    }
+
+    if (res.maxAbsDiff > tolerance) {
+        res.passed = false;
+    }
+    return res;
+}
+
+bool runVerification(const BenchmarkConfig& config, const FunctorRegistry& registry) {
+    std::string baselineName = config.verifyBaseline;
+    std::string candidateName = config.verifyCandidate;
+
+    auto stringsAreEqual = [](const std::string& a, const std::string& b) {
+        return std::ranges::equal(a, b,
+                                  [](const char ca, const char cb) {
+                                      return std::tolower(static_cast<unsigned char>(ca)) == std::tolower(static_cast<unsigned char>(cb));
+                                  });
+    };
+
+    if (baselineName.empty() or candidateName.empty()) {
+        std::vector<std::string> validTargets;
+        for (const auto& targetName : config.targetFunctors) {
+            for (const auto& registeredName : registry.getNames()) {
+                if (stringsAreEqual(targetName, registeredName)) {
+                    if (std::ranges::find(validTargets, registeredName) == validTargets.end()) {
+                        validTargets.push_back(registeredName);
+                    }
+                }
+            }
+        }
+
+        if (baselineName.empty()) {
+            if (not validTargets.empty()) {
+                baselineName = validTargets[0];
+            } else {
+                baselineName = registry.getNames()[0];
+            }
+        }
+
+        if (candidateName.empty()) {
+            if (validTargets.size() >= 2) {
+                candidateName = validTargets[1];
+            } else if (registry.getNames().size() >= 2) {
+                candidateName = registry.getNames()[1];
+            } else {
+                candidateName = baselineName; // fallback to baseline if no other candidate is available
+            }
+        }
+    }
+
+    if (not (registry.has(baselineName) and registry.has(candidateName))) {
+        std::cerr << "[VERIFY ERROR] Cannot run verification: Need both '" << baselineName 
+                  << "' and '" << candidateName << "' registered." << std::endl;
+        return false;
+    }
+
+    const auto& baselineInfo = registry.get(baselineName);
+    const auto& candidateInfo = registry.get(candidateName);
+
+    std::cout << "\n==========================================" << std::endl;
+    std::cout << "Functor Correctness Verification" << std::endl;
+    std::cout << "Baseline:  " << baselineName << std::endl;
+    std::cout << "Candidate: " << candidateName << std::endl;
+    std::cout << "Particles/cell: " << config.verifyParticles 
+              << " | Cell size: " << config.cellSize 
+              << " | Cutoff: " << config.cutoff 
+              << " | Tol: " << std::scientific << std::setprecision(2) << config.verifyTolerance 
+              << std::defaultfloat << std::endl;
+    std::cout << "==========================================" << std::endl;
+
+    const std::vector<std::pair<std::string, FunctorMode>> allPossibleModes = {
+        {"AoS", AOS},
+        {"SoASingle", SOASINGLE},
+        {"SoAPair", SOAPAIR},
+        {"SoATriple", SOATRIPLE}
+    };
+
+    std::vector<std::pair<std::string, FunctorMode>> testModes;
+    bool allModesReq = false;
+    for (const auto& m : config.targetModes) {
+        if (stringsAreEqual(m, "all")) {
+            allModesReq = true;
+            break;
+        }
+    }
+    if (allModesReq) {
+        testModes = allPossibleModes;
+    } else {
+        for (const auto& req : config.targetModes) {
+            for (const auto& [modeName, mode] : allPossibleModes) {
+                if (stringsAreEqual(req, modeName)) {
+                    auto it = std::ranges::find_if(testModes,
+                                                   [&](const auto& p) { return p.second == mode; });
+                    if (it == testModes.end()) {
+                        testModes.emplace_back(modeName, mode);
+                    }
+                }
+            }
+        }
+    }
+
+    bool allPassed = true;
+    const std::vector<bool> n3Options = {true, false};
+
+    for (const bool n3 : n3Options) {
+        for (const auto& [modeName, mode] : testModes) {
+            auto res = verifyOneMode(baselineInfo, candidateInfo, mode, n3,
+                                     config.verifyParticles, config.cellSize,
+                                     config.cutoff, config.seed, config.verifyTolerance);
+
+            std::cout << "[VERIFY] " << std::left << std::setw(12) << modeName
+                      << " | N3: " << (n3 ? "ON " : "OFF") << " | ";
+
+            if (res.passed) {
+                std::cout << "PASS (max abs diff: " << std::scientific << std::setprecision(2) << res.maxAbsDiff
+                          << ", max rel diff: " << res.maxRelDiff << ")";
+            } else {
+                allPassed = false;
+                std::cout << "FAIL! (max abs diff: " << std::scientific << std::setprecision(2) << res.maxAbsDiff
+                          << ", tol: " << config.verifyTolerance << ")";
+                if (!res.firstMismatch.empty()) {
+                    std::cout << "\n         -> " << res.firstMismatch;
+                }
+            }
+            std::cout << std::defaultfloat << std::endl;
+        }
+    }
+
+    std::cout << "==========================================" << std::endl;
+    if (allPassed) {
+        std::cout << "Verification Result: ALL CHECKS PASSED" << std::endl;
+    } else {
+        std::cout << "Verification Result: FAILED" << std::endl;
+    }
+    std::cout << "==========================================\n" << std::endl;
+
+    return allPassed;
+}
+
 void setupCLI(CLI::App& app, BenchmarkConfig& config, const FunctorRegistry& registry) {
     app.add_option("--min", config.minParticles, "Minimum number of particles")->default_val(1);
     app.add_option("--max", config.maxParticles, "Maximum number of particles")->default_val(512);
     app.add_option("-c,--cell-size", config.cellSize, "Size of the simulation cell")->default_val(3);
     app.add_option("-r,--cutoff", config.cutoff, "Cutoff radius for interactions")->default_val(3);
     app.add_option("-s,--seed", config.seed, "Random seed for reproducible particle generation")->default_val(42);
+
+    app.add_flag("-v,--verify", config.verify, "Verify correctness between baseline and candidate functors before benchmarking");
+    app.add_flag("--verify-only", config.verifyOnly, "Run correctness verification and exit immediately");
+    app.add_option("--verify-baseline", config.verifyBaseline, "Baseline functor for verification (default: first from -f)");
+    app.add_option("--verify-candidate", config.verifyCandidate, "Candidate functor for verification (default: second from -f)");
+    app.add_option("--verify-particles", config.verifyParticles, "Number of particles per cell for verification")->default_val(16);
+    app.add_option("--verify-tol", config.verifyTolerance, "Numerical tolerance for verification")->default_str("1e-10");
 
     auto validFunctors = registry.getNames();
     validFunctors.emplace_back("all");
@@ -485,6 +736,17 @@ int main(int argc, char** argv) {
     CLI11_PARSE(app, argc, argv);
 
     registerFunctors(config, registry);
+
+    if (config.verify || config.verifyOnly) {
+        const bool correctResults = runVerification(config, registry);
+        if (not correctResults) {
+            std::cerr << "[ERROR] Verification failed! Aborting." << std::endl;
+            return 1;
+        }
+        if (config.verifyOnly) {
+            return 0;
+        }
+    }
 
     benchmark::RunSpecifiedBenchmarks();
     benchmark::Shutdown();
