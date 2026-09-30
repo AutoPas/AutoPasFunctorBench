@@ -30,3 +30,9 @@ target_compile_definitions(AP_Functor_Bench PRIVATE
         AUTOPAS_BRANCH="${AUTOPAS_BRANCH}"
         AUTOPAS_COMMIT="${AUTOPAS_COMMIT_HASH}"
 )
+
+# Optional Intel ITT API for Intel Advisor / VTune profiling
+option(ENABLE_ITT "Enable Intel ITT API for selective profiling" OFF)
+if (ENABLE_ITT)
+    include(advisor)
+endif ()

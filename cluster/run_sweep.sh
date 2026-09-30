@@ -23,8 +23,9 @@ REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # Find executable across common build directories
 POSSIBLE_DIRS=(
     "${BUILD_DIR:-}"
-    "${REPO_DIR}/cmake-build-relwithdebinfo"
+    "${REPO_DIR}/cmake-build-relwithdebinfo-wsl---gcc"
     "${REPO_DIR}/cmake-build-release"
+    "${REPO_DIR}/cmake-build-relwithdebinfo"
     "${REPO_DIR}/build"
 )
 BIN=""
@@ -48,7 +49,7 @@ KERNELS="SoASingle,SoAPair,SoATriple,AoS"
 PARTICLES="16,32,64,128,256"
 NEWTON3="both"
 POOL_SIZE="1000"
-REPETITIONS="3"
+REPETITIONS="1"
 MIN_TIME="0.2s"
 QUICK=false
 
@@ -80,6 +81,10 @@ while [[ $# -gt 0 ]]; do
             NEWTON3="$2"
             shift 2
             ;;
+        -l|--label|--tag)
+            LABEL="$2"
+            shift 2
+            ;;
         --pool-size)
             POOL_SIZE="$2"
             shift 2
@@ -91,8 +96,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+LABEL="${LABEL:-}"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-OUT_DIR="${REPO_DIR}/results/sweep_${TIMESTAMP}"
+if [ -n "${LABEL}" ]; then
+    OUT_DIR="${REPO_DIR}/results/${TIMESTAMP}_${LABEL}"
+else
+    OUT_DIR="${REPO_DIR}/results/sweep_${TIMESTAMP}"
+fi
 mkdir -p "${OUT_DIR}"
 JSON_FILE="${OUT_DIR}/results.json"
 
@@ -127,6 +137,11 @@ export OMP_PROC_BIND=spread
     --benchmark_out="${JSON_FILE}" \
     --benchmark_out_format=json \
     ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
+
+if [ -n "${LABEL}" ]; then
+    ln -sf "${JSON_FILE}" "${REPO_DIR}/results/${LABEL}.json"
+    echo "Created convenient shortcut: results/${LABEL}.json -> ${JSON_FILE}"
+fi
 
 echo ""
 echo "Benchmark completed. Running automated analysis..."

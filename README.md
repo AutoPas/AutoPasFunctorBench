@@ -130,7 +130,7 @@ An interactive Jupyter Notebook is also available at `plot_benchmark.ipynb`.
 For running benchmarks on compute clusters or conducting automated parameter sweeps:
 
 ### 1. Interactive Sweeps (`cluster/run_sweep.sh`)
-Run a sweep across functors, kernels, and particle counts with CPU core pinning (`taskset -c 0`) and automatic post-processing:
+Run a sweep across functors, kernels, and particle counts with strict OpenMP core affinity and automatic post-processing:
 ```bash
 # Run default sweep across ATM & ATM2
 ./cluster/run_sweep.sh
@@ -151,9 +151,34 @@ sbatch cluster/benchmark.sbatch
 This script:
 - Enforces single-thread execution (`OMP_NUM_THREADS=1`) and exclusive node usage.
 - Records node hardware metadata (`lscpu`, CPU frequency governor, hostname).
-- Pins the benchmark process to core 0 (`taskset -c 0`) to prevent thread migration noise.
+- Configures standard OpenMP thread affinity (`OMP_PLACES=cores`, `OMP_PROC_BIND=spread`) respecting Slurm's CPU allocation.
 - Saves results to `results/<timestamp>_job<jobid>/`.
 - Automatically runs `scripts/analyze_benchmarks.py` upon completion to produce summary tables and plots.
+
+---
+
+## Vectorization & Roofline Analysis (Intel Advisor)
+
+To deeply inspect vectorization efficiency, instruction mix, and Roofline model placement without noise from verification or container setup:
+
+### 1. Build with Intel ITT API enabled
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DENABLE_ITT=ON
+cmake --build build --target AP_Functor_Bench -j
+```
+*(When `-DENABLE_ITT=OFF` (the default), the codebase compiles with zero dependencies and zero overhead.)*
+
+### 2. Run Automated Survey & Roofline Analysis
+```bash
+# Source Intel oneAPI / Advisor environment
+source /opt/intel/oneapi/setvars.sh  # or: module load intel/advisor
+
+# Run automated Survey + Trip Counts & FLOPs + HTML Roofline export
+./scripts/run_advisor.sh -f ATM2 -k SoATriple -p 64
+```
+This produces:
+- `advisor_results/roofline.html`: Standalone, interactive HTML Roofline model chart.
+- Full Advisor database viewable in GUI: `advisor-gui advisor_results`.
 
 ---
 

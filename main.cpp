@@ -15,6 +15,20 @@
 #include <iomanip>
 #include <sstream>
 
+#ifdef ENABLE_ITT
+#include <ittnotify.h>
+
+struct ITTScope {
+    inline ITTScope() { __itt_resume(); }
+    inline ~ITTScope() { __itt_pause(); }
+};
+#else
+struct ITTScope {
+    inline ITTScope() = default;
+    inline ~ITTScope() = default;
+};
+#endif
+
 // type aliases for ease of use
 using Particle = mdLib::MoleculeLJ;
 using Cell = autopas::FullParticleCell<Particle>;
@@ -236,7 +250,10 @@ static void BM_Functor(benchmark::State& state, Factory factory, FunctorKernel k
     {
         auto& currentCells = cellPool[pool_index];
 
-        applyFunctorOnParticles(functor, currentCells, kernel, newton3);
+        {
+            ITTScope itt;
+            applyFunctorOnParticles(functor, currentCells, kernel, newton3);
+        }
 
         pool_index = (pool_index + 1) % poolSize;
     }
@@ -263,17 +280,14 @@ static void BM_Functor(benchmark::State& state, Factory factory, FunctorKernel k
     {
         return std::round(x * std::pow(10, precision)) / std::pow(10, precision);
     };
-    state.counters["HitRate [%]"] = roundToPrecision(hitRate, 2);
-    state.counters["# of Triplets"] = avgDist;
+    state.counters["Hit%"] = roundToPrecision(hitRate, 2);
     if (avgDist > 0.0) {
-        state.counters["Time per Triplet"] = Counter(avgDist, Counter::kIsIterationInvariantRate | Counter::kInvert, Counter::OneK::kIs1000);
+        state.counters["Time/Triplet"] = Counter(avgDist, Counter::kIsIterationInvariantRate | Counter::kInvert, Counter::OneK::kIs1000);
         state.counters["Triplets/s"] = Counter(avgDist, Counter::kIsIterationInvariantRate, Counter::OneK::kIs1000);
     }
     if (avgForce > 0.0) {
-        state.counters["Time per Interaction"] = Counter(avgForce, Counter::kIsIterationInvariantRate | Counter::kInvert, Counter::OneK::kIs1000);
-        state.counters["Interactions/s"] = Counter(avgForce, Counter::kIsIterationInvariantRate, Counter::OneK::kIs1000);
+        state.counters["Time/Interaction"] = Counter(avgForce, Counter::kIsIterationInvariantRate | Counter::kInvert, Counter::OneK::kIs1000);
     }
-    state.SetItemsProcessed(static_cast<int64_t>(avgDist * iters));
 }
 
 struct FunctorInfo {
@@ -294,7 +308,7 @@ public:
         info.registerBenchmark = [name, functorFactory](const std::string& kernelName, FunctorKernel kernel, const BenchmarkConfig& config) {
             auto registerVariant = [&](bool n3, const std::string& suffix) {
                 auto* b = benchmark::RegisterBenchmark(
-                    "BM_" + name + "_" + kernelName + suffix,
+                    name + "_" + kernelName + suffix,
                     [=](benchmark::State& state) {
                         BM_Functor<FunctorType>(state, functorFactory, kernel, n3, config.seed, config.cellPoolSize);
                     });
@@ -754,6 +768,10 @@ bool handleHelpFlag(const int argc, char** argv, const CLI::App& app) {
 }
 
 int main(int argc, char** argv) {
+#ifdef ENABLE_ITT
+    // Start paused so setup, CLI parsing, container building, and verification are ignored by profilers
+    __itt_pause();
+#endif
     // Add the version info to the JSON metadata
     benchmark::AddCustomContext("AutoPas Branch", AUTOPAS_BRANCH);
     benchmark::AddCustomContext("AutoPas Commit", AUTOPAS_COMMIT);

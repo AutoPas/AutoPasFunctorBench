@@ -33,7 +33,12 @@ BIN="${BUILD_DIR}/AP_Functor_Bench"
 
 JOB_ID="${SLURM_JOB_ID:-manual}"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-OUT_DIR="${REPO_DIR}/results/${TIMESTAMP}_job${JOB_ID}"
+LABEL="${LABEL:-}"
+if [ -n "${LABEL}" ]; then
+    OUT_DIR="${REPO_DIR}/results/${TIMESTAMP}_job${JOB_ID}_${LABEL}"
+else
+    OUT_DIR="${REPO_DIR}/results/${TIMESTAMP}_job${JOB_ID}"
+fi
 mkdir -p "${OUT_DIR}"
 
 JSON_FILE="${OUT_DIR}/benchmark_results.json"
@@ -79,7 +84,7 @@ KERNELS="${KERNELS:-SoASingle,SoAPair,SoATriple,AoS}"
 PARTICLES="${PARTICLES:-16,32,64,128,256}"
 NEWTON3="${NEWTON3:-both}"
 POOL_SIZE="${POOL_SIZE:-1000}"
-REPETITIONS="${REPETITIONS:-5}"
+REPETITIONS="${REPETITIONS:-1}"
 MIN_TIME="${MIN_TIME:-0.5s}"
 
 echo "Functors:   ${FUNCTORS}"
@@ -108,6 +113,11 @@ echo "------------------------------------------"
     --benchmark_out_format=json
 
 echo "Benchmark finished successfully. Results saved to: ${JSON_FILE}"
+
+if [ -n "${LABEL}" ]; then
+    ln -sf "${JSON_FILE}" "${REPO_DIR}/results/${LABEL}.json"
+    echo "Created convenient shortcut: results/${LABEL}.json -> ${JSON_FILE}"
+fi
 
 # -------------------------------------------------------------
 # Post-Processing & Automated Analysis

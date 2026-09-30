@@ -54,9 +54,18 @@ def parse_benchmark_name(full_name: str) -> Dict:
     parts = full_name.split("/")
     bench_prefix = parts[0]
 
-    num_particles = int(parts[1]) if len(parts) > 1 else None
-    cell_size = float(parts[2]) if len(parts) > 2 else None
-    cutoff = float(parts[3]) if len(parts) > 3 else None
+    # Clean aggregate suffix from parameters if present (e.g. "3_mean", "3_median")
+    clean_parts = []
+    for p in parts[1:]:
+        for agg in ["_mean", "_median", "_stddev", "_cv"]:
+            if p.endswith(agg):
+                p = p[:-len(agg)]
+                break
+        clean_parts.append(p)
+
+    num_particles = int(clean_parts[0]) if len(clean_parts) > 0 and clean_parts[0].isdigit() else None
+    cell_size = float(clean_parts[1]) if len(clean_parts) > 1 else None
+    cutoff = float(clean_parts[2]) if len(clean_parts) > 2 else None
 
     # Strip leading "BM_"
     clean_prefix = bench_prefix
@@ -118,8 +127,15 @@ def load_benchmark_json(file_path: str, label_override: Optional[str] = None) ->
     branch = context.get("autopas_branch", "unknown")
     commit = context.get("autopas_commit", "unknown")[:8]
 
+    # If the file contains aggregate statistics (mean, median, stddev), only keep the 'mean'
+    has_aggregates = any(b.get("run_type") == "aggregate" for b in benchmarks)
+
     rows = []
     for b in benchmarks:
+        if has_aggregates:
+            if b.get("run_type") != "aggregate" or b.get("aggregate_name") != "mean":
+                continue
+
         name = b.get("name", "")
         parsed = parse_benchmark_name(name)
 
@@ -133,11 +149,9 @@ def load_benchmark_json(file_path: str, label_override: Optional[str] = None) ->
             "CPUTime_ns": b.get("cpu_time", np.nan),
             "TimeUnit": b.get("time_unit", "ns"),
             "TripletsPerSec": b.get("Triplets/s", np.nan),
-            "TimePerTriplet_s": b.get("Time per Triplet", np.nan),
-            "InteractionsPerSec": b.get("Interactions/s", np.nan),
-            "TimePerInteraction_s": b.get("Time per Interaction", np.nan),
-            "HitRate_pct": b.get("HitRate [%]", np.nan),
-            "NumTriplets": b.get("# of Triplets", np.nan),
+            "TimePerTriplet_s": b.get("Time/Triplet", np.nan),
+            "TimePerInteraction_s": b.get("Time/Interaction", np.nan),
+            "HitRate_pct": b.get("Hit%", np.nan),
             "Branch": branch,
             "Commit": commit,
             "SourceFile": path.name,
@@ -210,6 +224,7 @@ def compute_speedups(df: pd.DataFrame, baseline_functor: str) -> pd.DataFrame:
     Computes speedup for each benchmark relative to the baseline functor:
     speedup = baseline_real_time / candidate_real_time
     """
+    df = df.copy()
     keys = ["Kernel", "Newton3", "Particles", "CellSize", "Cutoff"]
 
     # Filter baseline entries
@@ -294,7 +309,7 @@ def plot_speedup_bar(df: pd.DataFrame, baseline_functor: str, output_path: Path)
 
     for idx, kernel in enumerate(kernels):
         ax = axes[0, idx]
-        k_df = candidates_df[candidates_df["Kernel"] == kernel]
+        k_df = candidates_df[candidates_df["Kernel"] == kernel].copy()
 
         # Combine Functor + Newton3 for hue if both N3 modes exist
         if len(k_df["Newton3"].unique()) > 1:
