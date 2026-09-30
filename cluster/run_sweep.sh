@@ -20,15 +20,24 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Find executable
-BUILD_DIR="${BUILD_DIR:-${REPO_DIR}/cmake-build-relwithdebinfo-wsl---gcc}"
-if [ ! -f "${BUILD_DIR}/AP_Functor_Bench" ]; then
-    BUILD_DIR="${REPO_DIR}/build"
-fi
-BIN="${BUILD_DIR}/AP_Functor_Bench"
+# Find executable across common build directories
+POSSIBLE_DIRS=(
+    "${BUILD_DIR:-}"
+    "${REPO_DIR}/cmake-build-relwithdebinfo"
+    "${REPO_DIR}/cmake-build-release"
+    "${REPO_DIR}/build"
+)
+BIN=""
+for dir in "${POSSIBLE_DIRS[@]}"; do
+    if [ -n "${dir}" ] && [ -f "${dir}/AP_Functor_Bench" ]; then
+        BIN="${dir}/AP_Functor_Bench"
+        BUILD_DIR="${dir}"
+        break
+    fi
+done
 
-if [ ! -f "${BIN}" ]; then
-    echo "Error: Binary not found at ${BIN}."
+if [ -z "${BIN}" ]; then
+    echo "Error: AP_Functor_Bench binary not found."
     echo "Please build the project first."
     exit 1
 fi
@@ -100,13 +109,12 @@ echo "Min Time:   ${MIN_TIME}"
 echo "Output:     ${OUT_DIR}"
 echo "=========================================="
 
-# Check if taskset is available for CPU pinning
-TASKSET=""
-if command -v taskset &>/dev/null; then
-    TASKSET="taskset -c 0"
-fi
+# OpenMP single-thread affinity
+export OMP_NUM_THREADS=1
+export OMP_PLACES=cores
+export OMP_PROC_BIND=spread
 
-${TASKSET} "${BIN}" \
+"${BIN}" \
     -v \
     -f "${FUNCTORS}" \
     -k "${KERNELS}" \
@@ -118,7 +126,7 @@ ${TASKSET} "${BIN}" \
     --benchmark_min_time="${MIN_TIME}" \
     --benchmark_out="${JSON_FILE}" \
     --benchmark_out_format=json \
-    "${EXTRA_ARGS[@]}"
+    ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 
 echo ""
 echo "Benchmark completed. Running automated analysis..."

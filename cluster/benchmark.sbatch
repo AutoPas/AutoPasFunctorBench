@@ -92,12 +92,9 @@ echo "Min Time:   ${MIN_TIME}"
 echo "------------------------------------------"
 
 # -------------------------------------------------------------
-# Execute Benchmark with CPU Pinning
+# Execute Benchmark
 # -------------------------------------------------------------
-# Pin to CPU core 0 to eliminate thread migration
-TASKSET="taskset -c 0"
-
-${TASKSET} "${BIN}" \
+"${BIN}" \
     -v \
     -f "${FUNCTORS}" \
     -k "${KERNELS}" \

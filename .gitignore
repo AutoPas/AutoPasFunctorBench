@@ -25,7 +25,8 @@ env/
 # benchmark output and test directories
 *testTuning_*/
 *measurePerf_*/
-results/
+results/*
+!results/.gitkeep
 scratch/
 results*.json
 

@@ -3,6 +3,11 @@ project(AP_Functor_Bench)
 
 set(CMAKE_CXX_STANDARD 17)
 
+# Default to Release build type for accurate benchmark timings
+if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Choose the type of build." FORCE)
+endif ()
+
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/)
 include(google-benchmark)
 include(autopas)
