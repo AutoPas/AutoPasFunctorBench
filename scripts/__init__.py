@@ -1,0 +1,1 @@
+"""AutoPasFunctorBench scripts package."""
