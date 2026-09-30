@@ -30,11 +30,13 @@ using ATM2 = mdLib::AxilrodTellerMutoFunctor2<Particle, mixing, functorN3Modes, 
 struct BenchmarkConfig {
     int64_t minParticles = 1;
     int64_t maxParticles = 512;
+    std::vector<int64_t> particles = {};
     double cellSize = 3;
     double cutoff = 3;
+    size_t cellPoolSize = 1000;
     std::vector<std::string> targetFunctors = {"all"};
     std::vector<std::string> targetKernels = {"all"};
-    bool newton3 = true;
+    std::string newton3 = "on";
     uint32_t seed = 42;
     bool verify = false;
     bool verifyOnly = false;
@@ -212,7 +214,7 @@ std::tuple<size_t, size_t> countInteractions(std::vector<Cell>& cells, const dou
 
 
 template <typename FunctorType, typename Factory>
-static void BM_Functor(benchmark::State& state, Factory factory, FunctorKernel kernel, bool newton3, uint32_t seed)
+static void BM_Functor(benchmark::State& state, Factory factory, FunctorKernel kernel, bool newton3, uint32_t seed, size_t poolSize)
 {
     const auto numParticles = static_cast<size_t>(state.range(0));
     const auto cellSize = static_cast<double>(state.range(1));
@@ -222,7 +224,6 @@ static void BM_Functor(benchmark::State& state, Factory factory, FunctorKernel k
 
     std::size_t calcsDistTotal = 0;
     std::size_t calcsForceTotal = 0;
-    constexpr size_t poolSize = 1000;
     std::vector<std::vector<Cell>> cellPool(poolSize, std::vector<Cell>{3});
 
     for (size_t poolIdx = 0; poolIdx < cellPool.size(); ++poolIdx) {
@@ -243,9 +244,9 @@ static void BM_Functor(benchmark::State& state, Factory factory, FunctorKernel k
     state.SetComplexityN(numParticles);
 
     const auto iters = static_cast<double>(state.iterations());
-    const auto avg = std::min(5.0, iters);
+    const auto avg = std::min({5.0, iters, static_cast<double>(poolSize)});
     // Count interactions for first 5 or fewer cells
-    for (auto i = 0; i < avg; i++)
+    for (size_t i = 0; i < static_cast<size_t>(avg); ++i)
     {
         const auto [calcsDist, calcsForce] = countInteractions(cellPool[i], cutoff, kernel);
         calcsDistTotal += calcsDist;
@@ -291,15 +292,36 @@ public:
         info.description = description;
 
         info.registerBenchmark = [name, functorFactory](const std::string& kernelName, FunctorKernel kernel, const BenchmarkConfig& config) {
-            benchmark::RegisterBenchmark(
-                "BM_" + name + "_" + kernelName,
-                [=](benchmark::State& state) {
-                    BM_Functor<FunctorType>(state, functorFactory, kernel, config.newton3, config.seed);
-                })
-                ->RangeMultiplier(2)
-                ->Ranges({{config.minParticles, config.maxParticles},
-                          {config.cellSize, config.cellSize},
-                          {config.cutoff, config.cutoff}});
+            auto registerVariant = [&](bool n3, const std::string& suffix) {
+                auto* b = benchmark::RegisterBenchmark(
+                    "BM_" + name + "_" + kernelName + suffix,
+                    [=](benchmark::State& state) {
+                        BM_Functor<FunctorType>(state, functorFactory, kernel, n3, config.seed, config.cellPoolSize);
+                    });
+
+                if (!config.particles.empty()) {
+                    for (int64_t p : config.particles) {
+                        b->Args({p, static_cast<int64_t>(config.cellSize), static_cast<int64_t>(config.cutoff)});
+                    }
+                } else {
+                    b->RangeMultiplier(2)
+                     ->Ranges({{config.minParticles, config.maxParticles},
+                               {static_cast<int64_t>(config.cellSize), static_cast<int64_t>(config.cellSize)},
+                               {static_cast<int64_t>(config.cutoff), static_cast<int64_t>(config.cutoff)}});
+                }
+            };
+
+            auto lowerN3 = config.newton3;
+            for (char& c : lowerN3) c = std::tolower(static_cast<unsigned char>(c));
+
+            if (lowerN3 == "both") {
+                registerVariant(true, "_N3ON");
+                registerVariant(false, "_N3OFF");
+            } else if (lowerN3 == "off") {
+                registerVariant(false, "_N3OFF");
+            } else {
+                registerVariant(true, "");
+            }
         };
 
         info.runOnce = [functorFactory](std::vector<Cell>& cells, FunctorKernel kernel, bool newton3, double cutoff) {
@@ -635,7 +657,17 @@ bool runVerification(const BenchmarkConfig& config, const FunctorRegistry& regis
     }
 
     bool allPassed = true;
-    const std::vector<bool> n3Options = {true, false};
+    std::vector<bool> n3Options;
+    auto lowerN3 = config.newton3;
+    for (char& c : lowerN3) c = std::tolower(static_cast<unsigned char>(c));
+
+    if (lowerN3 == "off") {
+        n3Options = {false};
+    } else if (lowerN3 == "both" || config.verifyOnly) {
+        n3Options = {true, false};
+    } else {
+        n3Options = {true};
+    }
 
     for (const bool n3 : n3Options) {
         for (const auto& [kernelName, kernel] : testKernels) {
@@ -675,9 +707,15 @@ bool runVerification(const BenchmarkConfig& config, const FunctorRegistry& regis
 void setupCLI(CLI::App& app, BenchmarkConfig& config, const FunctorRegistry& registry) {
     app.add_option("--min", config.minParticles, "Minimum number of particles")->default_val(1);
     app.add_option("--max", config.maxParticles, "Maximum number of particles")->default_val(512);
+    app.add_option("-p,--particles", config.particles, "Comma-separated list of particle counts (overrides --min/--max)")
+       ->delimiter(',')
+       ->check(CLI::PositiveNumber);
     app.add_option("-c,--cell-size", config.cellSize, "Size of the simulation cell")->default_val(3);
     app.add_option("-r,--cutoff", config.cutoff, "Cutoff radius for interactions")->default_val(3);
     app.add_option("-s,--seed", config.seed, "Random seed for reproducible particle generation")->default_val(42);
+    app.add_option("--pool-size", config.cellPoolSize, "Number of cell stencils pre-generated in pool")
+       ->default_val(1000)
+       ->check(CLI::PositiveNumber);
 
     app.add_flag("-v,--verify", config.verify, "Verify correctness between baseline and candidate functors before benchmarking");
     app.add_flag("--verify-only", config.verifyOnly, "Run correctness verification and exit immediately");
@@ -697,7 +735,10 @@ void setupCLI(CLI::App& app, BenchmarkConfig& config, const FunctorRegistry& reg
        ->check(CLI::IsMember({"AoS", "SoASingle", "SoAPair", "SoATriple", "all"}, CLI::ignore_case))
        ->delimiter(',');
 
-    app.add_flag("--n3,!--no-n3", config.newton3, "Enable/Disable Newton3 (enabled by default)");
+    app.add_option("--n3", config.newton3, "Newton3 option: {on, off, both}")
+       ->default_str("on")
+       ->check(CLI::IsMember({"on", "off", "both"}, CLI::ignore_case));
+    app.add_flag_callback("--no-n3", [&config]() { config.newton3 = "off"; }, "Disable Newton3 (alias for --n3 off)");
 }
 
 bool handleHelpFlag(const int argc, char** argv, const CLI::App& app) {
@@ -714,8 +755,8 @@ bool handleHelpFlag(const int argc, char** argv, const CLI::App& app) {
 
 int main(int argc, char** argv) {
     // Add the version info to the JSON metadata
-    benchmark::AddCustomContext("autopas_branch", AUTOPAS_BRANCH);
-    benchmark::AddCustomContext("autopas_commit", AUTOPAS_COMMIT);
+    benchmark::AddCustomContext("AutoPas Branch", AUTOPAS_BRANCH);
+    benchmark::AddCustomContext("AutoPas Commit", AUTOPAS_COMMIT);
     benchmark::MaybeReenterWithoutASLR(argc, argv);
 
     // Initialize Functor Registry
@@ -734,6 +775,12 @@ int main(int argc, char** argv) {
 
     benchmark::Initialize(&argc, argv);
     CLI11_PARSE(app, argc, argv);
+
+    if (!config.particles.empty()) {
+        std::ranges::sort(config.particles);
+        auto [first, last] = std::ranges::unique(config.particles);
+        config.particles.erase(first, last);
+    }
 
     registerFunctors(config, registry);
 
