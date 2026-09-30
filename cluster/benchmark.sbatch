@@ -12,17 +12,19 @@
 set -euo pipefail
 
 # -------------------------------------------------------------
-# 1. Environment & Module Setup (Customize for your cluster)
+# Environment & Module Setup
 # -------------------------------------------------------------
-# module purge
+# module --force purge
 # module load gcc/12 cmake/3.26 python/3.10
 
 # Disable multi-threading / OpenMP to ensure single-core evaluation
 export OMP_NUM_THREADS=1
-export KMP_AFFINITY=granularity=fine,compact,1,0
+export OMP_PLACES=cores
+export OMP_PROC_BIND=spread
+export OMP_DISPLAY_AFFINITY=TRUE
 
 # -------------------------------------------------------------
-# 2. Paths & Directories
+# Paths & Directories
 # -------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -46,7 +48,7 @@ echo "Output:    ${OUT_DIR}"
 echo "=========================================="
 
 # -------------------------------------------------------------
-# 3. Capture Hardware & System Metadata
+# Capture Hardware & System Metadata
 # -------------------------------------------------------------
 {
     echo "Hostname: $(hostname)"
@@ -59,7 +61,7 @@ echo "=========================================="
 } > "${NODE_INFO}"
 
 # -------------------------------------------------------------
-# 4. Check Executable
+# Check Executable
 # -------------------------------------------------------------
 if [ ! -f "${BIN}" ]; then
     echo "Error: Binary not found at ${BIN}."
@@ -70,7 +72,7 @@ if [ ! -f "${BIN}" ]; then
 fi
 
 # -------------------------------------------------------------
-# 5. Benchmark Configuration (Override via environment variables)
+# Benchmark Configuration (Override via environment variables)
 # -------------------------------------------------------------
 FUNCTORS="${FUNCTORS:-ATM,ATM2}"
 KERNELS="${KERNELS:-SoASingle,SoAPair,SoATriple,AoS}"
@@ -90,7 +92,7 @@ echo "Min Time:   ${MIN_TIME}"
 echo "------------------------------------------"
 
 # -------------------------------------------------------------
-# 6. Execute Benchmark with CPU Pinning
+# Execute Benchmark with CPU Pinning
 # -------------------------------------------------------------
 # Pin to CPU core 0 to eliminate thread migration
 TASKSET="taskset -c 0"
@@ -111,7 +113,7 @@ ${TASKSET} "${BIN}" \
 echo "Benchmark finished successfully. Results saved to: ${JSON_FILE}"
 
 # -------------------------------------------------------------
-# 7. Post-Processing & Automated Analysis
+# Post-Processing & Automated Analysis
 # -------------------------------------------------------------
 if command -v python3 &>/dev/null && [ -f "${REPO_DIR}/scripts/analyze_benchmarks.py" ]; then
     echo ""
