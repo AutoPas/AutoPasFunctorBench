@@ -33,7 +33,7 @@ struct BenchmarkConfig {
     double cellSize = 3;
     double cutoff = 3;
     std::vector<std::string> targetFunctors = {"all"};
-    std::vector<std::string> targetModes = {"all"};
+    std::vector<std::string> targetKernels = {"all"};
     bool newton3 = true;
     uint32_t seed = 42;
     bool verify = false;
@@ -44,7 +44,7 @@ struct BenchmarkConfig {
     std::string verifyCandidate;
 };
 
-enum FunctorMode
+enum FunctorKernel
 {
     AOS,
     SOASINGLE,
@@ -62,7 +62,7 @@ double distSquared(const std::array<double, 3> &a, const std::array<double, 3> &
 
 template <typename FunctorType>
 void generateParticles(FunctorType& functor, std::vector<Cell>& cells, const size_t numberOfParticles,
-                       const double cellSize, const FunctorMode mode, const uint32_t seed)
+                       const double cellSize, const FunctorKernel kernel, const uint32_t seed)
 {
     // generate randomly distributed particles with deterministic seed
     std::mt19937 gen(seed);
@@ -81,7 +81,7 @@ void generateParticles(FunctorType& functor, std::vector<Cell>& cells, const siz
             cell.addParticle(p); // Add particle to the current cell
         }
     };
-    switch (mode)
+    switch (kernel)
     {
     case AOS:
         fillCellWithParticles(cells[0], 0., 0., 0., 0);
@@ -117,9 +117,9 @@ void applyAoSFunctor(FunctorType& functor, Cell& cell, bool newton3)
 }
 
 template <typename FunctorType>
-void applyFunctorOnParticles(FunctorType& functor, std::vector<Cell>& cells, const FunctorMode mode, bool newton3)
+void applyFunctorOnParticles(FunctorType& functor, std::vector<Cell>& cells, const FunctorKernel kernel, bool newton3)
 {
-    switch (mode)
+    switch (kernel)
     {
     case AOS:
         applyAoSFunctor(functor, cells[0], newton3);
@@ -137,13 +137,13 @@ void applyFunctorOnParticles(FunctorType& functor, std::vector<Cell>& cells, con
     }
 }
 
-std::tuple<size_t, size_t> countInteractions(std::vector<Cell>& cells, const double cutoff, const FunctorMode mode)
+std::tuple<size_t, size_t> countInteractions(std::vector<Cell>& cells, const double cutoff, const FunctorKernel kernel)
 {
     size_t calcsDist{0};
     size_t calcsForce{0};
     const auto cutoffSquared{cutoff * cutoff};
 
-    switch (mode)
+    switch (kernel)
     {
     case AOS:
     case SOASINGLE:
@@ -212,7 +212,7 @@ std::tuple<size_t, size_t> countInteractions(std::vector<Cell>& cells, const dou
 
 
 template <typename FunctorType, typename Factory>
-static void BM_Functor(benchmark::State& state, Factory factory, FunctorMode functorMode, bool newton3, uint32_t seed)
+static void BM_Functor(benchmark::State& state, Factory factory, FunctorKernel kernel, bool newton3, uint32_t seed)
 {
     const auto numParticles = static_cast<size_t>(state.range(0));
     const auto cellSize = static_cast<double>(state.range(1));
@@ -226,7 +226,7 @@ static void BM_Functor(benchmark::State& state, Factory factory, FunctorMode fun
     std::vector<std::vector<Cell>> cellPool(poolSize, std::vector<Cell>{3});
 
     for (size_t poolIdx = 0; poolIdx < cellPool.size(); ++poolIdx) {
-        generateParticles(functor, cellPool[poolIdx], numParticles, cellSize, functorMode, seed + static_cast<uint32_t>(poolIdx));
+        generateParticles(functor, cellPool[poolIdx], numParticles, cellSize, kernel, seed + static_cast<uint32_t>(poolIdx));
     }
 
     size_t pool_index = 0;
@@ -235,7 +235,7 @@ static void BM_Functor(benchmark::State& state, Factory factory, FunctorMode fun
     {
         auto& currentCells = cellPool[pool_index];
 
-        applyFunctorOnParticles(functor, currentCells, functorMode, newton3);
+        applyFunctorOnParticles(functor, currentCells, kernel, newton3);
 
         pool_index = (pool_index + 1) % poolSize;
     }
@@ -247,7 +247,7 @@ static void BM_Functor(benchmark::State& state, Factory factory, FunctorMode fun
     // Count interactions for first 5 or fewer cells
     for (auto i = 0; i < avg; i++)
     {
-        const auto [calcsDist, calcsForce] = countInteractions(cellPool[i], cutoff, functorMode);
+        const auto [calcsDist, calcsForce] = countInteractions(cellPool[i], cutoff, kernel);
         calcsDistTotal += calcsDist;
         calcsForceTotal += calcsForce;
     }
@@ -278,8 +278,8 @@ static void BM_Functor(benchmark::State& state, Factory factory, FunctorMode fun
 struct FunctorInfo {
     std::string name;
     std::string description;
-    std::function<void(const std::string& modeName, FunctorMode mode, const BenchmarkConfig& config)> registerBenchmark;
-    std::function<void(std::vector<Cell>& cells, FunctorMode mode, bool newton3, double cutoff)> runOnce;
+    std::function<void(const std::string& kernelName, FunctorKernel kernel, const BenchmarkConfig& config)> registerBenchmark;
+    std::function<void(std::vector<Cell>& cells, FunctorKernel kernel, bool newton3, double cutoff)> runOnce;
 };
 
 class FunctorRegistry {
@@ -290,11 +290,11 @@ public:
         info.name = name;
         info.description = description;
 
-        info.registerBenchmark = [name, functorFactory](const std::string& modeName, FunctorMode mode, const BenchmarkConfig& config) {
+        info.registerBenchmark = [name, functorFactory](const std::string& kernelName, FunctorKernel kernel, const BenchmarkConfig& config) {
             benchmark::RegisterBenchmark(
-                "BM_" + name + "_" + modeName,
+                "BM_" + name + "_" + kernelName,
                 [=](benchmark::State& state) {
-                    BM_Functor<FunctorType>(state, functorFactory, mode, config.newton3, config.seed);
+                    BM_Functor<FunctorType>(state, functorFactory, kernel, config.newton3, config.seed);
                 })
                 ->RangeMultiplier(2)
                 ->Ranges({{config.minParticles, config.maxParticles},
@@ -302,17 +302,17 @@ public:
                           {config.cutoff, config.cutoff}});
         };
 
-        info.runOnce = [functorFactory](std::vector<Cell>& cells, FunctorMode mode, bool newton3, double cutoff) {
+        info.runOnce = [functorFactory](std::vector<Cell>& cells, FunctorKernel kernel, bool newton3, double cutoff) {
             auto functor = functorFactory(cutoff);
-            if (mode != AOS) {
+            if (kernel != AOS) {
                 for (auto& cell : cells) {
                     if (!cell.isEmpty()) {
                         functor.SoALoader(cell, cell._particleSoABuffer, 0, false);
                     }
                 }
             }
-            applyFunctorOnParticles(functor, cells, mode, newton3);
-            if (mode != AOS) {
+            applyFunctorOnParticles(functor, cells, kernel, newton3);
+            if (kernel != AOS) {
                 for (auto& cell : cells) {
                     if (!cell.isEmpty()) {
                         functor.SoAExtractor(cell, cell._particleSoABuffer, 0);
@@ -368,7 +368,7 @@ void registerFunctors(const BenchmarkConfig& config, const FunctorRegistry& regi
     std::cout << "AutoPas Commit: " << AUTOPAS_COMMIT << std::endl;
     std::cout << "==========================================" << std::endl;
 
-    constexpr std::array modes = {
+    constexpr std::array kernels = {
         std::make_pair("AoS", AOS),
         std::make_pair("SoASingle", SOASINGLE),
         std::make_pair("SoAPair", SOAPAIR),
@@ -406,40 +406,40 @@ void registerFunctors(const BenchmarkConfig& config, const FunctorRegistry& regi
         }
     }
 
-    // Resolve requested functor modes
-    std::vector<std::pair<std::string, FunctorMode>> requestedModes;
-    bool allModesRequested = false;
-    for (const auto& functorMode : config.targetModes) {
-        if (stringsAreEqual(functorMode, "all")) {
-            allModesRequested = true;
+    // Resolve requested functor kernels
+    std::vector<std::pair<std::string, FunctorKernel>> requestedKernels;
+    bool allKernelsRequested = false;
+    for (const auto& functorKernel : config.targetKernels) {
+        if (stringsAreEqual(functorKernel, "all")) {
+            allKernelsRequested = true;
             break;
         }
     }
 
-    if (allModesRequested) {
-        for (const auto& mode : modes) {
-            requestedModes.emplace_back(mode);
+    if (allKernelsRequested) {
+        for (const auto& kernel : kernels) {
+            requestedKernels.emplace_back(kernel);
         }
     } else {
-        for (const auto& requestedMode : config.targetModes) {
-            for (const auto& [modeName, functorMode] : modes) {
-                if (stringsAreEqual(requestedMode, modeName)) {
-                    auto it = std::ranges::find_if(requestedModes,
-                                                   [&](const auto& pair) { return pair.second == functorMode; });
-                    if (it == requestedModes.end()) {
-                        requestedModes.emplace_back(modeName, functorMode);
+        for (const auto& requestedKernel : config.targetKernels) {
+            for (const auto& [kernelName, functorKernel] : kernels) {
+                if (stringsAreEqual(requestedKernel, kernelName)) {
+                    auto it = std::ranges::find_if(requestedKernels,
+                                                   [&](const auto& pair) { return pair.second == functorKernel; });
+                    if (it == requestedKernels.end()) {
+                        requestedKernels.emplace_back(kernelName, functorKernel);
                     }
                 }
             }
         }
     }
 
-    // Register each (functor, mode) pair cleanly
+    // Register each (functor, kernel) pair cleanly
     for (const auto& functorName : requestedFunctors) {
         if (!registry.has(functorName)) continue;
         const auto& info = registry.get(functorName);
-        for (const auto& [modeName, mode] : requestedModes) {
-            info.registerBenchmark(modeName, mode, config);
+        for (const auto& [kernelName, kernel] : requestedKernels) {
+            info.registerBenchmark(kernelName, kernel, config);
         }
     }
 }
@@ -452,9 +452,9 @@ struct VerifyResult {
     std::string firstMismatch;
 };
 
-VerifyResult verifyOneMode(const FunctorInfo& baselineInfo, const FunctorInfo& candidateInfo,
-                           const FunctorMode mode, const bool newton3, const size_t numParticles,
-                           const double cellSize, const double cutoff, const uint32_t seed, const double tolerance)
+VerifyResult verifyOneKernel(const FunctorInfo& baselineInfo, const FunctorInfo& candidateInfo,
+                             const FunctorKernel kernel, const bool newton3, const size_t numParticles,
+                             const double cellSize, const double cutoff, const uint32_t seed, const double tolerance)
 {
     std::vector<Cell> cellsBaseline(3);
     std::vector<Cell> cellsCandidate(3);
@@ -476,7 +476,7 @@ VerifyResult verifyOneMode(const FunctorInfo& baselineInfo, const FunctorInfo& c
             }
         };
 
-        switch (mode) {
+        switch (kernel) {
         case AOS:
         case SOASINGLE:
             fillCell(cells[0], 0., 0., 0., 0);
@@ -496,8 +496,8 @@ VerifyResult verifyOneMode(const FunctorInfo& baselineInfo, const FunctorInfo& c
     fillCells(cellsBaseline, genBaseline);
     fillCells(cellsCandidate, genCandidate);
 
-    baselineInfo.runOnce(cellsBaseline, mode, newton3, cutoff);
-    candidateInfo.runOnce(cellsCandidate, mode, newton3, cutoff);
+    baselineInfo.runOnce(cellsBaseline, kernel, newton3, cutoff);
+    candidateInfo.runOnce(cellsCandidate, kernel, newton3, cutoff);
 
     VerifyResult res;
     for (size_t c = 0; c < cellsBaseline.size(); ++c) {
@@ -603,31 +603,31 @@ bool runVerification(const BenchmarkConfig& config, const FunctorRegistry& regis
               << std::defaultfloat << std::endl;
     std::cout << "==========================================" << std::endl;
 
-    const std::vector<std::pair<std::string, FunctorMode>> allPossibleModes = {
+    const std::vector<std::pair<std::string, FunctorKernel>> allPossibleKernels = {
         {"AoS", AOS},
         {"SoASingle", SOASINGLE},
         {"SoAPair", SOAPAIR},
         {"SoATriple", SOATRIPLE}
     };
 
-    std::vector<std::pair<std::string, FunctorMode>> testModes;
-    bool allModesReq = false;
-    for (const auto& m : config.targetModes) {
+    std::vector<std::pair<std::string, FunctorKernel>> testKernels;
+    bool allKernelsReq = false;
+    for (const auto& m : config.targetKernels) {
         if (stringsAreEqual(m, "all")) {
-            allModesReq = true;
+            allKernelsReq = true;
             break;
         }
     }
-    if (allModesReq) {
-        testModes = allPossibleModes;
+    if (allKernelsReq) {
+        testKernels = allPossibleKernels;
     } else {
-        for (const auto& req : config.targetModes) {
-            for (const auto& [modeName, mode] : allPossibleModes) {
-                if (stringsAreEqual(req, modeName)) {
-                    auto it = std::ranges::find_if(testModes,
-                                                   [&](const auto& p) { return p.second == mode; });
-                    if (it == testModes.end()) {
-                        testModes.emplace_back(modeName, mode);
+        for (const auto& req : config.targetKernels) {
+            for (const auto& [kernelName, kernel] : allPossibleKernels) {
+                if (stringsAreEqual(req, kernelName)) {
+                    auto it = std::ranges::find_if(testKernels,
+                                                   [&](const auto& p) { return p.second == kernel; });
+                    if (it == testKernels.end()) {
+                        testKernels.emplace_back(kernelName, kernel);
                     }
                 }
             }
@@ -638,12 +638,12 @@ bool runVerification(const BenchmarkConfig& config, const FunctorRegistry& regis
     const std::vector<bool> n3Options = {true, false};
 
     for (const bool n3 : n3Options) {
-        for (const auto& [modeName, mode] : testModes) {
-            auto res = verifyOneMode(baselineInfo, candidateInfo, mode, n3,
-                                     config.verifyParticles, config.cellSize,
-                                     config.cutoff, config.seed, config.verifyTolerance);
+        for (const auto& [kernelName, kernel] : testKernels) {
+            auto res = verifyOneKernel(baselineInfo, candidateInfo, kernel, n3,
+                                       config.verifyParticles, config.cellSize,
+                                       config.cutoff, config.seed, config.verifyTolerance);
 
-            std::cout << "[VERIFY] " << std::left << std::setw(12) << modeName
+            std::cout << "[VERIFY] " << std::left << std::setw(12) << kernelName
                       << " | N3: " << (n3 ? "ON " : "OFF") << " | ";
 
             if (res.passed) {
@@ -693,7 +693,7 @@ void setupCLI(CLI::App& app, BenchmarkConfig& config, const FunctorRegistry& reg
            ->check(CLI::IsMember(validFunctors, CLI::ignore_case))
            ->delimiter(',');
 
-    app.add_option("-m,--mode", config.targetModes, "Comma-separated list of modes to test")
+    app.add_option("-k,--kernel", config.targetKernels, "Comma-separated list of kernels to test")
        ->check(CLI::IsMember({"AoS", "SoASingle", "SoAPair", "SoATriple", "all"}, CLI::ignore_case))
        ->delimiter(',');
 
