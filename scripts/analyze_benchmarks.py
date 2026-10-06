@@ -168,6 +168,45 @@ def load_benchmark_json(file_path: str, label_override: Optional[str] = None) ->
     return pd.DataFrame(rows)
 
 
+def load_multi_run_comparison(
+    runs: Dict[str, str],
+    baseline_functor: str = "ATM",
+    candidate_functor: str = "ATM2",
+    baseline_file: Optional[str] = None,
+) -> pd.DataFrame:
+    """
+    Combines multiple benchmark runs where each run contains a baseline and a candidate variant.
+    Extracts the single reference baseline from the baseline_file (or first file in runs)
+    and extracts candidate_functor from each file, relabeling it with the provided display label.
+    """
+    if not runs:
+        raise ValueError("runs dictionary cannot be empty.")
+
+    valid_runs = {k: v for k, v in runs.items() if Path(v).is_file()}
+    if not valid_runs:
+        raise FileNotFoundError(f"None of the benchmark files in runs exist: {list(runs.values())}")
+
+    if baseline_file is None:
+        baseline_file = list(valid_runs.values())[0]
+
+    base_raw = load_benchmark_json(baseline_file)
+    base_df = base_raw[base_raw["Functor"] == baseline_functor].copy()
+    if base_df.empty:
+        base_df = base_raw.copy()
+
+    cand_dfs = []
+    for label, path in valid_runs.items():
+        raw_df = load_benchmark_json(path)
+        cand_rows = raw_df[raw_df["Functor"] == candidate_functor].copy()
+        if cand_rows.empty:
+            cand_rows = raw_df[raw_df["Functor"] != baseline_functor].copy()
+        cand_rows["Functor"] = label
+        cand_dfs.append(cand_rows)
+
+    combined_df = pd.concat([base_df] + cand_dfs, ignore_index=True)
+    return compute_speedups(combined_df, baseline_functor=baseline_functor)
+
+
 def load_dataset(args: argparse.Namespace) -> Tuple[pd.DataFrame, str]:
     """
     Loads benchmark data from CLI arguments and resolves the baseline functor name.
@@ -182,21 +221,39 @@ def load_dataset(args: argparse.Namespace) -> Tuple[pd.DataFrame, str]:
             baseline_functor = args.baseline
 
     if args.baseline_file:
-        # Syntax: name=path or path
+        # Syntax: name=path or name=path:functor
+        target_functor = None
         if "=" in args.baseline_file:
             name, path = args.baseline_file.split("=", 1)
         else:
             name, path = "Baseline", args.baseline_file
+        if ":" in path:
+            path, target_functor = path.split(":", 1)
+        raw_df = load_benchmark_json(path)
+        if target_functor:
+            raw_df = raw_df[raw_df["Functor"] == target_functor].copy()
+        elif "ATM" in raw_df["Functor"].values:
+            raw_df = raw_df[raw_df["Functor"] == "ATM"].copy()
+        raw_df["Functor"] = name
         baseline_functor = name
-        dfs.append(load_benchmark_json(path, label_override=name))
+        dfs.append(raw_df)
 
     if args.candidate_files:
         for c in args.candidate_files:
+            target_functor = None
             if "=" in c:
                 name, path = c.split("=", 1)
             else:
                 name, path = Path(c).stem, c
-            dfs.append(load_benchmark_json(path, label_override=name))
+            if ":" in path:
+                path, target_functor = path.split(":", 1)
+            raw_df = load_benchmark_json(path)
+            if target_functor:
+                raw_df = raw_df[raw_df["Functor"] == target_functor].copy()
+            elif "ATM2" in raw_df["Functor"].values:
+                raw_df = raw_df[raw_df["Functor"] == "ATM2"].copy()
+            raw_df["Functor"] = name
+            dfs.append(raw_df)
 
     if not dfs:
         raise ValueError("No input benchmark JSON files provided. Use --help for usage.")
@@ -290,7 +347,12 @@ def print_summary_table(df: pd.DataFrame, baseline_functor: str):
     print("=" * 80 + "\n")
 
 
-def plot_speedup_bar(df: pd.DataFrame, baseline_functor: str, output_path: Path):
+def plot_speedup_bar(
+    df: pd.DataFrame,
+    baseline_functor: str,
+    output_path: Optional[Path] = None,
+    close_fig: bool = False,
+):
     """
     Plots a grouped bar chart of Candidate Speedup relative to Baseline (1.0x line).
     Only candidate functors are plotted as bars; Baseline is represented by the 1.0x line.
@@ -298,7 +360,7 @@ def plot_speedup_bar(df: pd.DataFrame, baseline_functor: str, output_path: Path)
     candidates_df = df[df["Functor"] != baseline_functor].copy()
     if candidates_df.empty:
         print("[INFO] No candidate functors found to plot speedup against baseline.")
-        return
+        return None, None
 
     kernels = candidates_df["Kernel"].unique()
     num_kernels = len(kernels)
@@ -337,12 +399,19 @@ def plot_speedup_bar(df: pd.DataFrame, baseline_functor: str, output_path: Path)
 
     plt.suptitle(f"Candidate Speedup Normalized to Baseline ({baseline_functor} = 1.0x)", y=1.02)
     plt.tight_layout()
-    fig.savefig(output_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"[SAVED] Speedup bar plot: {output_path}")
+    if output_path is not None:
+        fig.savefig(output_path, dpi=300, bbox_inches="tight")
+        print(f"[SAVED] Speedup bar plot: {output_path}")
+    if close_fig:
+        plt.close(fig)
+    return fig, axes
 
 
-def plot_throughput_scaling(df: pd.DataFrame, output_path: Path):
+def plot_throughput_scaling(
+    df: pd.DataFrame,
+    output_path: Optional[Path] = None,
+    close_fig: bool = False,
+):
     """
     Plots throughput (GigaTriplets/sec) vs. Particle Count per Cell on a log-x scale.
     """
@@ -373,19 +442,26 @@ def plot_throughput_scaling(df: pd.DataFrame, output_path: Path):
     ax.legend(title=None, bbox_to_anchor=(1.05, 1), loc="upper left")
 
     plt.tight_layout()
-    fig.savefig(output_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"[SAVED] Throughput scaling plot: {output_path}")
+    if output_path is not None:
+        fig.savefig(output_path, dpi=300, bbox_inches="tight")
+        print(f"[SAVED] Throughput scaling plot: {output_path}")
+    if close_fig:
+        plt.close(fig)
+    return fig, ax
 
 
-def plot_time_per_triplet(df: pd.DataFrame, output_path: Path):
+def plot_time_per_triplet(
+    df: pd.DataFrame,
+    output_path: Optional[Path] = None,
+    close_fig: bool = False,
+):
     """
     Plots Time per Triplet (in picoseconds) vs. Particle Count.
     Lower is better.
     """
     valid_df = df.dropna(subset=["TimePerTriplet_ps"]).copy()
     if valid_df.empty:
-        return
+        return None, None
 
     fig, ax = plt.subplots(figsize=(8, 5))
     valid_df["Variant"] = valid_df["Functor"] + " (" + valid_df["Kernel"] + ", N3 " + valid_df["Newton3"] + ")"
@@ -410,9 +486,12 @@ def plot_time_per_triplet(df: pd.DataFrame, output_path: Path):
     ax.legend(title=None, bbox_to_anchor=(1.05, 1), loc="upper left")
 
     plt.tight_layout()
-    fig.savefig(output_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"[SAVED] Time per triplet plot: {output_path}")
+    if output_path is not None:
+        fig.savefig(output_path, dpi=300, bbox_inches="tight")
+        print(f"[SAVED] Time per triplet plot: {output_path}")
+    if close_fig:
+        plt.close(fig)
+    return fig, ax
 
 
 def main():
@@ -471,9 +550,9 @@ def main():
         out_dir = Path(args.output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        plot_speedup_bar(df, baseline, out_dir / "speedup_vs_baseline.png")
-        plot_throughput_scaling(df, out_dir / "throughput_scaling.png")
-        plot_time_per_triplet(df, out_dir / "time_per_triplet.png")
+        plot_speedup_bar(df, baseline, out_dir / "speedup_vs_baseline.png", close_fig=True)
+        plot_throughput_scaling(df, out_dir / "throughput_scaling.png", close_fig=True)
+        plot_time_per_triplet(df, out_dir / "time_per_triplet.png", close_fig=True)
 
 
 if __name__ == "__main__":

@@ -24,6 +24,7 @@ target_link_libraries(AP_Functor_Bench
         )
 
 target_include_directories(AP_Functor_Bench PRIVATE functor-variants)
+target_compile_options(AP_Functor_Bench PRIVATE -fno-save-optimization-record)
 
 # Pass autopas info to C++ code via a macro
 target_compile_definitions(AP_Functor_Bench PRIVATE

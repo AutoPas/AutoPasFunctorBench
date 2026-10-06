@@ -23,9 +23,9 @@ REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # Find executable across common build directories
 POSSIBLE_DIRS=(
     "${BUILD_DIR:-}"
-    "${REPO_DIR}/cmake-build-relwithdebinfo-wsl---gcc"
     "${REPO_DIR}/cmake-build-release"
     "${REPO_DIR}/cmake-build-relwithdebinfo"
+    "${REPO_DIR}/cmake-build-relwithdebinfo-wsl---gcc"
     "${REPO_DIR}/build"
 )
 BIN=""
@@ -52,6 +52,7 @@ POOL_SIZE="1000"
 REPETITIONS="1"
 MIN_TIME="0.2s"
 QUICK=false
+BASELINE=""
 
 # Parse command line overrides
 EXTRA_ARGS=()
@@ -67,6 +68,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -f|--functor)
             FUNCTORS="$2"
+            shift 2
+            ;;
+        -b|--baseline)
+            BASELINE="$2"
             shift 2
             ;;
         -k|--kernel)
@@ -95,6 +100,15 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [ -z "${BASELINE}" ]; then
+    FIRST_FUNCTOR=$(echo "${FUNCTORS}" | cut -d',' -f1)
+    if [ "${FIRST_FUNCTOR}" = "all" ]; then
+        BASELINE="ATM"
+    else
+        BASELINE="${FIRST_FUNCTOR}"
+    fi
+fi
 
 LABEL="${LABEL:-}"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
@@ -148,7 +162,7 @@ echo "Benchmark completed. Running automated analysis..."
 
 if command -v python3 &>/dev/null && [ -f "${REPO_DIR}/scripts/analyze_benchmarks.py" ]; then
     python3 "${REPO_DIR}/scripts/analyze_benchmarks.py" "${JSON_FILE}" \
-        --baseline ATM \
+        --baseline "${BASELINE}" \
         --output-dir "${OUT_DIR}/plots"
     echo "Plots and tables saved to: ${OUT_DIR}/plots"
 fi

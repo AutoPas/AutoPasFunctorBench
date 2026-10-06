@@ -28,6 +28,7 @@ env/
 results/*
 !results/.gitkeep
 scratch/
+plots/
 results*.json
 
 # profiling & analyzer artifacts (Intel Advisor, VTune, etc.)

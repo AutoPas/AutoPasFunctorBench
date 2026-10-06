@@ -3,6 +3,7 @@
 #include <molecularDynamicsLibrary/MoleculeLJ.h>
 #include <molecularDynamicsLibrary/AxilrodTellerMutoFunctor.h>
 #include <AxilrodTellerMutoFunctor2.h>
+#include <AxilrodTellerMutoFunctor3.h>
 #include "benchmark/benchmark.h"
 
 #include <autopas/cells/FullParticleCell.h>
@@ -14,6 +15,8 @@
 #include <cctype>
 #include <iomanip>
 #include <sstream>
+#include <optional>
+#include <type_traits>
 
 #ifdef ENABLE_ITT
 #include <ittnotify.h>
@@ -40,6 +43,9 @@ constexpr bool globals{false};
 using ATM = mdLib::AxilrodTellerMutoFunctor<Particle, mixing, functorN3Modes, globals>;
 using ATMGlobals = mdLib::AxilrodTellerMutoFunctor<Particle, mixing, functorN3Modes, true>;
 using ATM2 = mdLib::AxilrodTellerMutoFunctor2<Particle, mixing, functorN3Modes, globals>;
+using ATM2Globals = mdLib::AxilrodTellerMutoFunctor2<Particle, mixing, functorN3Modes, true>;
+using ATM3 = mdLib::AxilrodTellerMutoFunctor3<Particle, mixing, functorN3Modes, globals>;
+using ATM3Globals = mdLib::AxilrodTellerMutoFunctor3<Particle, mixing, functorN3Modes, true>;
 
 struct BenchmarkConfig {
     int64_t minParticles = 1;
@@ -290,11 +296,24 @@ static void BM_Functor(benchmark::State& state, Factory factory, FunctorKernel k
     }
 }
 
+template <typename T>
+struct is_calculate_globals : std::false_type {};
+
+template <template <typename, bool, autopas::FunctorN3Modes, bool, bool> class Template,
+          typename P, bool M, autopas::FunctorN3Modes N, bool G, bool F>
+struct is_calculate_globals<Template<P, M, N, G, F>> : std::integral_constant<bool, G> {};
+
+struct GlobalsOutput {
+    double potentialEnergy = 0.0;
+    double virial = 0.0;
+};
+
 struct FunctorInfo {
     std::string name;
     std::string description;
+    bool calculatesGlobals = false;
     std::function<void(const std::string& kernelName, FunctorKernel kernel, const BenchmarkConfig& config)> registerBenchmark;
-    std::function<void(std::vector<Cell>& cells, FunctorKernel kernel, bool newton3, double cutoff)> runOnce;
+    std::function<std::optional<GlobalsOutput>(std::vector<Cell>& cells, FunctorKernel kernel, bool newton3, double cutoff)> runOnce;
 };
 
 class FunctorRegistry {
@@ -304,6 +323,8 @@ public:
         FunctorInfo info;
         info.name = name;
         info.description = description;
+        constexpr bool hasGlobals = is_calculate_globals<FunctorType>::value;
+        info.calculatesGlobals = hasGlobals;
 
         info.registerBenchmark = [name, functorFactory](const std::string& kernelName, FunctorKernel kernel, const BenchmarkConfig& config) {
             auto registerVariant = [&](bool n3, const std::string& suffix) {
@@ -338,8 +359,10 @@ public:
             }
         };
 
-        info.runOnce = [functorFactory](std::vector<Cell>& cells, FunctorKernel kernel, bool newton3, double cutoff) {
+        info.runOnce = [functorFactory](std::vector<Cell>& cells, FunctorKernel kernel, bool newton3, double cutoff)
+            -> std::optional<GlobalsOutput> {
             auto functor = functorFactory(cutoff);
+            functor.initTraversal();
             if (kernel != AOS) {
                 for (auto& cell : cells) {
                     if (!cell.isEmpty()) {
@@ -354,6 +377,13 @@ public:
                         functor.SoAExtractor(cell, cell._particleSoABuffer, 0);
                     }
                 }
+            }
+            functor.endTraversal(newton3);
+
+            if constexpr (hasGlobals) {
+                return GlobalsOutput{functor.getPotentialEnergy(), functor.getVirial()};
+            } else {
+                return std::nullopt;
             }
         };
 
@@ -389,8 +419,26 @@ void initRegistry(FunctorRegistry& reg) {
         return f;
     });
 
+    reg.registerFunctor<ATM3>("ATM3", "Axilrod-Teller-Muto Hybrid Functor", [](const double cutoff) {
+        ATM3 f{cutoff};
+        f.setParticleProperties(1.0);
+        return f;
+    });
+
     reg.registerFunctor<ATMGlobals>("ATMGlobals", "ATM Functor with Globals calculation", [](const double cutoff) {
         ATMGlobals f{cutoff};
+        f.setParticleProperties(1.0);
+        return f;
+    });
+
+    reg.registerFunctor<ATM2Globals>("ATM2Globals", "ATM2 Functor with Globals calculation", [](const double cutoff) {
+        ATM2Globals f{cutoff};
+        f.setParticleProperties(1.0);
+        return f;
+    });
+
+    reg.registerFunctor<ATM3Globals>("ATM3Globals", "ATM3 Functor with Globals calculation", [](const double cutoff) {
+        ATM3Globals f{cutoff};
         f.setParticleProperties(1.0);
         return f;
     });
@@ -486,6 +534,18 @@ struct VerifyResult {
     double maxRelDiff = 0.0;
     double maxBaselineForce = 0.0;
     std::string firstMismatch;
+
+    // Globals verification (energy & virial)
+    bool verifiedGlobals = false;
+    double baselineUpot = 0.0;
+    double candidateUpot = 0.0;
+    double diffUpot = 0.0;
+    double relDiffUpot = 0.0;
+
+    double baselineVirial = 0.0;
+    double candidateVirial = 0.0;
+    double diffVirial = 0.0;
+    double relDiffVirial = 0.0;
 };
 
 VerifyResult verifyOneKernel(const FunctorInfo& baselineInfo, const FunctorInfo& candidateInfo,
@@ -532,8 +592,8 @@ VerifyResult verifyOneKernel(const FunctorInfo& baselineInfo, const FunctorInfo&
     fillCells(cellsBaseline, genBaseline);
     fillCells(cellsCandidate, genCandidate);
 
-    baselineInfo.runOnce(cellsBaseline, kernel, newton3, cutoff);
-    candidateInfo.runOnce(cellsCandidate, kernel, newton3, cutoff);
+    const auto baselineGlobals = baselineInfo.runOnce(cellsBaseline, kernel, newton3, cutoff);
+    const auto candidateGlobals = candidateInfo.runOnce(cellsCandidate, kernel, newton3, cutoff);
 
     VerifyResult res;
     for (size_t c = 0; c < cellsBaseline.size(); ++c) {
@@ -561,7 +621,7 @@ VerifyResult verifyOneKernel(const FunctorInfo& baselineInfo, const FunctorInfo&
 
                 if (diff > tolerance && res.firstMismatch.empty()) {
                     std::ostringstream ss;
-                    ss << "Cell " << c << ", Particle " << p
+                    ss << "Force mismatch at Cell " << c << ", Particle " << p
                        << ", Dim " << (d == 0 ? "X" : (d == 1 ? "Y" : "Z"))
                        << ": Baseline=" << baselineVal << ", Candidate=" << candidateVal
                        << " (Diff=" << diff << ")";
@@ -574,6 +634,53 @@ VerifyResult verifyOneKernel(const FunctorInfo& baselineInfo, const FunctorInfo&
     if (res.maxAbsDiff > tolerance) {
         res.passed = false;
     }
+
+    // Verify globals if both baseline and candidate calculate globals
+    if (baselineGlobals.has_value() && candidateGlobals.has_value()) {
+        res.verifiedGlobals = true;
+        res.baselineUpot = baselineGlobals->potentialEnergy;
+        res.candidateUpot = candidateGlobals->potentialEnergy;
+        res.diffUpot = std::abs(res.baselineUpot - res.candidateUpot);
+        const double denomUpot = std::max(std::abs(res.baselineUpot), std::abs(res.candidateUpot));
+        if (denomUpot > 1e-12) {
+            res.relDiffUpot = res.diffUpot / denomUpot;
+        }
+
+        res.baselineVirial = baselineGlobals->virial;
+        res.candidateVirial = candidateGlobals->virial;
+        res.diffVirial = std::abs(res.baselineVirial - res.candidateVirial);
+        const double denomVirial = std::max(std::abs(res.baselineVirial), std::abs(res.candidateVirial));
+        if (denomVirial > 1e-12) {
+            res.relDiffVirial = res.diffVirial / denomVirial;
+        }
+
+        if (std::isnan(res.diffUpot) || std::isinf(res.diffUpot)) {
+            res.passed = false;
+            if (res.firstMismatch.empty()) res.firstMismatch = "NaN or Inf in Potential Energy!";
+        } else if (res.diffUpot > tolerance) {
+            res.passed = false;
+            if (res.firstMismatch.empty()) {
+                std::ostringstream ss;
+                ss << "Upot mismatch: Baseline=" << res.baselineUpot
+                   << ", Candidate=" << res.candidateUpot << " (Diff=" << res.diffUpot << ")";
+                res.firstMismatch = ss.str();
+            }
+        }
+
+        if (std::isnan(res.diffVirial) || std::isinf(res.diffVirial)) {
+            res.passed = false;
+            if (res.firstMismatch.empty()) res.firstMismatch = "NaN or Inf in Virial!";
+        } else if (res.diffVirial > tolerance) {
+            res.passed = false;
+            if (res.firstMismatch.empty()) {
+                std::ostringstream ss;
+                ss << "Virial mismatch: Baseline=" << res.baselineVirial
+                   << ", Candidate=" << res.candidateVirial << " (Diff=" << res.diffVirial << ")";
+                res.firstMismatch = ss.str();
+            }
+        }
+    }
+
     return res;
 }
 
@@ -588,7 +695,18 @@ bool runVerification(const BenchmarkConfig& config, const FunctorRegistry& regis
                                   });
     };
 
-    if (baselineName.empty() or candidateName.empty()) {
+    std::vector<std::pair<std::string, std::string>> verifyPairs;
+
+    if (!baselineName.empty() || !candidateName.empty()) {
+        if (baselineName.empty()) {
+            baselineName = registry.getNames()[0];
+        }
+        if (candidateName.empty()) {
+            candidateName = (registry.getNames().size() >= 2) ? registry.getNames()[1] : baselineName;
+        }
+        verifyPairs.emplace_back(baselineName, candidateName);
+    } else {
+        // Collect requested targets
         std::vector<std::string> validTargets;
         for (const auto& targetName : config.targetFunctors) {
             for (const auto& registeredName : registry.getNames()) {
@@ -599,45 +717,41 @@ bool runVerification(const BenchmarkConfig& config, const FunctorRegistry& regis
                 }
             }
         }
-
-        if (baselineName.empty()) {
-            if (not validTargets.empty()) {
-                baselineName = validTargets[0];
-            } else {
-                baselineName = registry.getNames()[0];
-            }
+        if (validTargets.empty()) {
+            validTargets = registry.getNames();
         }
 
-        if (candidateName.empty()) {
+        // If target functors include both standard and globals variants, verify both pairs
+        bool hasATM = std::ranges::find(validTargets, "ATM") != validTargets.end();
+        bool hasATM2 = std::ranges::find(validTargets, "ATM2") != validTargets.end();
+        bool hasATM3 = std::ranges::find(validTargets, "ATM3") != validTargets.end();
+        bool hasATMGlobals = std::ranges::find(validTargets, "ATMGlobals") != validTargets.end();
+        bool hasATM2Globals = std::ranges::find(validTargets, "ATM2Globals") != validTargets.end();
+        bool hasATM3Globals = std::ranges::find(validTargets, "ATM3Globals") != validTargets.end();
+
+        if (hasATM && hasATM2) {
+            verifyPairs.emplace_back("ATM", "ATM2");
+        }
+        if (hasATM && hasATM3) {
+            verifyPairs.emplace_back("ATM", "ATM3");
+        }
+        if (hasATMGlobals && hasATM2Globals) {
+            verifyPairs.emplace_back("ATMGlobals", "ATM2Globals");
+        }
+        if (hasATMGlobals && hasATM3Globals) {
+            verifyPairs.emplace_back("ATMGlobals", "ATM3Globals");
+        }
+
+        if (verifyPairs.empty()) {
             if (validTargets.size() >= 2) {
-                candidateName = validTargets[1];
+                verifyPairs.emplace_back(validTargets[0], validTargets[1]);
             } else if (registry.getNames().size() >= 2) {
-                candidateName = registry.getNames()[1];
+                verifyPairs.emplace_back(registry.getNames()[0], registry.getNames()[1]);
             } else {
-                candidateName = baselineName; // fallback to baseline if no other candidate is available
+                verifyPairs.emplace_back(registry.getNames()[0], registry.getNames()[0]);
             }
         }
     }
-
-    if (not (registry.has(baselineName) and registry.has(candidateName))) {
-        std::cerr << "[VERIFY ERROR] Cannot run verification: Need both '" << baselineName 
-                  << "' and '" << candidateName << "' registered." << std::endl;
-        return false;
-    }
-
-    const auto& baselineInfo = registry.get(baselineName);
-    const auto& candidateInfo = registry.get(candidateName);
-
-    std::cout << "\n==========================================" << std::endl;
-    std::cout << "Functor Correctness Verification" << std::endl;
-    std::cout << "Baseline:  " << baselineName << std::endl;
-    std::cout << "Candidate: " << candidateName << std::endl;
-    std::cout << "Particles/cell: " << config.verifyParticles 
-              << " | Cell size: " << config.cellSize 
-              << " | Cutoff: " << config.cutoff 
-              << " | Tol: " << std::scientific << std::setprecision(2) << config.verifyTolerance 
-              << std::defaultfloat << std::endl;
-    std::cout << "==========================================" << std::endl;
 
     const std::vector<std::pair<std::string, FunctorKernel>> allPossibleKernels = {
         {"AoS", AOS},
@@ -670,7 +784,6 @@ bool runVerification(const BenchmarkConfig& config, const FunctorRegistry& regis
         }
     }
 
-    bool allPassed = true;
     std::vector<bool> n3Options;
     auto lowerN3 = config.newton3;
     for (char& c : lowerN3) c = std::tolower(static_cast<unsigned char>(c));
@@ -683,27 +796,67 @@ bool runVerification(const BenchmarkConfig& config, const FunctorRegistry& regis
         n3Options = {true};
     }
 
-    for (const bool n3 : n3Options) {
-        for (const auto& [kernelName, kernel] : testKernels) {
-            auto res = verifyOneKernel(baselineInfo, candidateInfo, kernel, n3,
-                                       config.verifyParticles, config.cellSize,
-                                       config.cutoff, config.seed, config.verifyTolerance);
+    bool allPassed = true;
 
-            std::cout << "[VERIFY] " << std::left << std::setw(12) << kernelName
-                      << " | N3: " << (n3 ? "ON " : "OFF") << " | ";
+    for (const auto& [baseName, candName] : verifyPairs) {
+        if (!registry.has(baseName) || !registry.has(candName)) {
+            std::cerr << "[VERIFY ERROR] Cannot run verification: Need both '" << baseName 
+                      << "' and '" << candName << "' registered." << std::endl;
+            return false;
+        }
 
-            if (res.passed) {
-                std::cout << "PASS (max abs diff: " << std::scientific << std::setprecision(2) << res.maxAbsDiff
-                          << ", max rel diff: " << res.maxRelDiff << ")";
-            } else {
-                allPassed = false;
-                std::cout << "FAIL! (max abs diff: " << std::scientific << std::setprecision(2) << res.maxAbsDiff
-                          << ", tol: " << config.verifyTolerance << ")";
-                if (!res.firstMismatch.empty()) {
-                    std::cout << "\n         -> " << res.firstMismatch;
+        const auto& baselineInfo = registry.get(baseName);
+        const auto& candidateInfo = registry.get(candName);
+
+        std::cout << "\n==========================================" << std::endl;
+        std::cout << "Functor Correctness Verification" << std::endl;
+        std::cout << "Baseline:  " << baseName << (baselineInfo.calculatesGlobals ? " (Globals: YES)" : " (Globals: NO)") << std::endl;
+        std::cout << "Candidate: " << candName << (candidateInfo.calculatesGlobals ? " (Globals: YES)" : " (Globals: NO)") << std::endl;
+        if (baselineInfo.calculatesGlobals && candidateInfo.calculatesGlobals) {
+            std::cout << "Scope:     Forces, Potential Energy, Virial" << std::endl;
+        } else if (baselineInfo.calculatesGlobals != candidateInfo.calculatesGlobals) {
+            std::cout << "Scope:     Forces only (one functor does not calculate globals)" << std::endl;
+        } else {
+            std::cout << "Scope:     Forces only" << std::endl;
+        }
+        std::cout << "Particles/cell: " << config.verifyParticles 
+                  << " | Cell size: " << config.cellSize 
+                  << " | Cutoff: " << config.cutoff 
+                  << " | Tol: " << std::scientific << std::setprecision(2) << config.verifyTolerance 
+                  << std::defaultfloat << std::endl;
+        std::cout << "==========================================" << std::endl;
+
+        for (const bool n3 : n3Options) {
+            for (const auto& [kernelName, kernel] : testKernels) {
+                auto res = verifyOneKernel(baselineInfo, candidateInfo, kernel, n3,
+                                           config.verifyParticles, config.cellSize,
+                                           config.cutoff, config.seed, config.verifyTolerance);
+
+                std::cout << "[VERIFY] " << std::left << std::setw(12) << kernelName
+                          << " | N3: " << (n3 ? "ON " : "OFF") << " | ";
+
+                if (res.passed) {
+                    std::cout << "PASS (force diff: " << std::scientific << std::setprecision(2) << res.maxAbsDiff;
+                    if (res.verifiedGlobals) {
+                        std::cout << ", Upot diff: " << res.diffUpot
+                                  << ", Virial diff: " << res.diffVirial;
+                    }
+                    std::cout << ")";
+                } else {
+                    allPassed = false;
+                    std::cout << "FAIL! (force diff: " << std::scientific << std::setprecision(2) << res.maxAbsDiff
+                              << ", tol: " << config.verifyTolerance;
+                    if (res.verifiedGlobals) {
+                        std::cout << ", Upot diff: " << res.diffUpot
+                                  << ", Virial diff: " << res.diffVirial;
+                    }
+                    std::cout << ")";
+                    if (!res.firstMismatch.empty()) {
+                        std::cout << "\n         -> " << res.firstMismatch;
+                    }
                 }
+                std::cout << std::defaultfloat << std::endl;
             }
-            std::cout << std::defaultfloat << std::endl;
         }
     }
 
