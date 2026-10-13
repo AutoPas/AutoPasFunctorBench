@@ -83,6 +83,7 @@ FUNCTORS="${FUNCTORS:-ATM,ATM2}"
 KERNELS="${KERNELS:-SoASingle,SoAPair,SoATriple,AoS}"
 PARTICLES="${PARTICLES:-16,32,64,128,256}"
 NEWTON3="${NEWTON3:-both}"
+GLOBALS="${GLOBALS:-both}"
 POOL_SIZE="${POOL_SIZE:-1000}"
 REPETITIONS="${REPETITIONS:-1}"
 MIN_TIME="${MIN_TIME:-0.5s}"
@@ -91,6 +92,7 @@ echo "Functors:   ${FUNCTORS}"
 echo "Kernels:    ${KERNELS}"
 echo "Particles:  ${PARTICLES}"
 echo "Newton-3:   ${NEWTON3}"
+echo "Globals:    ${GLOBALS}"
 echo "Pool Size:  ${POOL_SIZE}"
 echo "Reps:       ${REPETITIONS}"
 echo "Min Time:   ${MIN_TIME}"
@@ -106,6 +108,7 @@ echo "------------------------------------------"
     -p "${PARTICLES}" \
     --pool-size "${POOL_SIZE}" \
     --n3 "${NEWTON3}" \
+    --globals "${GLOBALS}" \
     --benchmark_repetitions="${REPETITIONS}" \
     --benchmark_report_aggregates_only=true \
     --benchmark_min_time="${MIN_TIME}" \
@@ -125,8 +128,12 @@ fi
 if command -v python3 &>/dev/null && [ -f "${REPO_DIR}/scripts/analyze_benchmarks.py" ]; then
     echo ""
     echo "Running analysis and generating plots..."
+    BASELINE="ATM"
+    if [ "${GLOBALS}" = "on" ]; then
+        BASELINE="ATMGlobals"
+    fi
     python3 "${REPO_DIR}/scripts/analyze_benchmarks.py" "${JSON_FILE}" \
-        --baseline ATM \
+        --baseline "${BASELINE}" \
         --output-dir "${OUT_DIR}/plots"
     echo "Plots saved to: ${OUT_DIR}/plots"
 fi

@@ -48,6 +48,7 @@ FUNCTORS="ATM,ATM2"
 KERNELS="SoASingle,SoAPair,SoATriple,AoS"
 PARTICLES="16,32,64,128,256"
 NEWTON3="both"
+GLOBALS="both"
 POOL_SIZE="1000"
 REPETITIONS="1"
 MIN_TIME="0.2s"
@@ -86,6 +87,18 @@ while [[ $# -gt 0 ]]; do
             NEWTON3="$2"
             shift 2
             ;;
+        -g|--globals)
+            GLOBALS="$2"
+            shift 2
+            ;;
+        --no-globals)
+            GLOBALS="off"
+            shift
+            ;;
+        --with-globals)
+            GLOBALS="on"
+            shift
+            ;;
         -l|--label|--tag)
             LABEL="$2"
             shift 2
@@ -104,9 +117,17 @@ done
 if [ -z "${BASELINE}" ]; then
     FIRST_FUNCTOR=$(echo "${FUNCTORS}" | cut -d',' -f1)
     if [ "${FIRST_FUNCTOR}" = "all" ]; then
-        BASELINE="ATM"
+        if [ "${GLOBALS}" = "on" ]; then
+            BASELINE="ATMGlobals"
+        else
+            BASELINE="ATM"
+        fi
     else
-        BASELINE="${FIRST_FUNCTOR}"
+        if [ "${GLOBALS}" = "on" ] && [[ "${FIRST_FUNCTOR}" != *Globals* ]]; then
+            BASELINE="${FIRST_FUNCTOR}Globals"
+        else
+            BASELINE="${FIRST_FUNCTOR}"
+        fi
     fi
 fi
 
@@ -127,6 +148,7 @@ echo "Functors:   ${FUNCTORS}"
 echo "Kernels:    ${KERNELS}"
 echo "Particles:  ${PARTICLES}"
 echo "Newton-3:   ${NEWTON3}"
+echo "Globals:    ${GLOBALS}"
 echo "Pool Size:  ${POOL_SIZE}"
 echo "Reps:       ${REPETITIONS}"
 echo "Min Time:   ${MIN_TIME}"
@@ -145,6 +167,7 @@ export OMP_PROC_BIND=spread
     -p "${PARTICLES}" \
     --pool-size "${POOL_SIZE}" \
     --n3 "${NEWTON3}" \
+    --globals "${GLOBALS}" \
     --benchmark_repetitions="${REPETITIONS}" \
     --benchmark_report_aggregates_only=true \
     --benchmark_min_time="${MIN_TIME}" \

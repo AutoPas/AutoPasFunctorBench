@@ -59,6 +59,9 @@ cmake --build build --target AP_Functor_Bench -j$(nproc)
 | `--min`, `--max` | Particle range per cell when `-p` is not set (powers of 2) | `1`, `512` |
 | `--n3` | Newton-3 configuration: `on`, `off`, or `both` | `on` |
 | `--no-n3` | Shortcut to disable Newton-3 (`--n3 off`) | |
+| `-g, --globals` | Globals configuration: `on`, `off`, or `both` | `off` |
+| `--no-globals` | Shortcut to disable globals (`--globals off`) | |
+| `--with-globals` | Shortcut to enable globals (`--globals on`) | |
 | `--pool-size` | Number of cell stencils pre-generated in memory pool | `1000` |
 | `-c, --cell-size` | Simulation cell size | `3.0` |
 | `-r, --cutoff` | Interaction cutoff radius | `3.0` |
@@ -132,14 +135,14 @@ For running benchmarks on compute clusters or conducting automated parameter swe
 ### 1. Interactive Sweeps (`cluster/run_sweep.sh`)
 Run a sweep across functors, kernels, and particle counts with strict OpenMP core affinity and automatic post-processing:
 ```bash
-# Run default sweep across ATM & ATM2
+# Run default sweep across ATM & ATM2 (sweeps both Newton-3 and Globals by default)
 ./cluster/run_sweep.sh
 
 # Run quick sanity sweep
 ./cluster/run_sweep.sh --quick
 
 # Custom sweep
-./cluster/run_sweep.sh -f ATM,ATM2 -k SoATriple,SoAPair -p 16,32,64,128 --n3 both
+./cluster/run_sweep.sh -f ATM,ATM2 -k SoASingle -p 16,32,64 --n3 both -g both
 ```
 Results and plots are automatically saved to `results/sweep_<timestamp>/`.
 
