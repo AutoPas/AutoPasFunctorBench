@@ -44,7 +44,7 @@ if [ -z "${BIN}" ]; then
 fi
 
 # Defaults
-FUNCTORS="ATM,ATM2"
+FUNCTORS="all"
 KERNELS="SoASingle,SoAPair,SoATriple,AoS"
 PARTICLES="16,32,64,128,256"
 NEWTON3="both"

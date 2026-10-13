@@ -79,7 +79,7 @@ fi
 # -------------------------------------------------------------
 # Benchmark Configuration (Override via environment variables)
 # -------------------------------------------------------------
-FUNCTORS="${FUNCTORS:-ATM,ATM2}"
+FUNCTORS="${FUNCTORS:-all}"
 KERNELS="${KERNELS:-SoASingle,SoAPair,SoATriple,AoS}"
 PARTICLES="${PARTICLES:-16,32,64,128,256}"
 NEWTON3="${NEWTON3:-both}"

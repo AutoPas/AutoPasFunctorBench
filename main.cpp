@@ -821,51 +821,53 @@ bool runVerification(const BenchmarkConfig& config, const FunctorRegistry& regis
     auto lowerGlobals = config.globals;
     for (char& c : lowerGlobals) c = std::tolower(static_cast<unsigned char>(c));
 
-    if (!baselineName.empty() || !candidateName.empty()) {
-        if (baselineName.empty()) {
-            baselineName = registry.getNames()[0];
-        }
-        if (candidateName.empty()) {
-            candidateName = (registry.getNames().size() >= 2) ? registry.getNames()[1] : baselineName;
-        }
-        verifyPairs.emplace_back(baselineName, candidateName);
+    auto resolvedFunctors = resolveTargetFunctors(config, registry);
+    if (resolvedFunctors.empty()) {
+        resolvedFunctors = registry.getNames();
+    }
 
-        // If globals is "both", also verify the globals variants if they exist
-        if (lowerGlobals == "both") {
-            std::string baseGlobals = getBaseFunctorName(baselineName) + "Globals";
-            std::string candGlobals = getBaseFunctorName(candidateName) + "Globals";
-            if (registry.has(baseGlobals) && registry.has(candGlobals) &&
-                (baseGlobals != baselineName || candGlobals != candidateName)) {
-                verifyPairs.emplace_back(baseGlobals, candGlobals);
+    std::vector<std::string> activeNonGlobals;
+    std::vector<std::string> activeGlobals;
+    for (const auto& name : resolvedFunctors) {
+        if (registry.has(name)) {
+            if (registry.get(name).calculatesGlobals) {
+                activeGlobals.push_back(name);
+            } else {
+                activeNonGlobals.push_back(name);
+            }
+        }
+    }
+
+    // Case 1: Specific candidate explicitly requested
+    if (!candidateName.empty()) {
+        std::string base = baselineName.empty() ? (activeNonGlobals.empty() ? registry.getNames()[0] : activeNonGlobals[0]) : baselineName;
+        if (lowerGlobals != "on") {
+            verifyPairs.emplace_back(base, candidateName);
+        }
+        if (lowerGlobals == "both" || lowerGlobals == "on") {
+            std::string baseG = getBaseFunctorName(base) + "Globals";
+            std::string candG = getBaseFunctorName(candidateName) + "Globals";
+            if (registry.has(baseG) && registry.has(candG) && (baseG != base || candG != candidateName)) {
+                verifyPairs.emplace_back(baseG, candG);
             }
         }
     } else {
-        auto resolvedFunctors = resolveTargetFunctors(config, registry);
-        if (resolvedFunctors.empty()) {
-            resolvedFunctors = registry.getNames();
-        }
+        // Case 2: Candidate not explicitly specified -> verify EVERY variant against baseline
 
-        std::vector<std::string> activeNonGlobals;
-        std::vector<std::string> activeGlobals;
-        for (const auto& name : resolvedFunctors) {
-            if (registry.has(name)) {
-                if (registry.get(name).calculatesGlobals) {
-                    activeGlobals.push_back(name);
-                } else {
-                    activeNonGlobals.push_back(name);
-                }
-            }
-        }
-
-        // Pair up non-globals functors
+        // Non-globals pairs
         if (!activeNonGlobals.empty()) {
             std::string base = activeNonGlobals[0];
-            for (const auto& name : activeNonGlobals) {
-                if (stringsAreEqual(name, "ATM")) {
-                    base = name;
-                    break;
+            if (!baselineName.empty() && registry.has(baselineName) && !registry.get(baselineName).calculatesGlobals) {
+                base = baselineName;
+            } else {
+                for (const auto& name : activeNonGlobals) {
+                    if (stringsAreEqual(name, "ATM")) {
+                        base = name;
+                        break;
+                    }
                 }
             }
+
             if (activeNonGlobals.size() == 1) {
                 verifyPairs.emplace_back(activeNonGlobals[0], activeNonGlobals[0]);
             } else {
@@ -877,34 +879,36 @@ bool runVerification(const BenchmarkConfig& config, const FunctorRegistry& regis
             }
         }
 
-        // Pair up globals functors
+        // Globals pairs
         if (!activeGlobals.empty()) {
-            std::string base = activeGlobals[0];
+            std::string baseG = activeGlobals[0];
+            std::string targetBaseG = (!baselineName.empty()) ? (getBaseFunctorName(baselineName) + "Globals") : "ATMGlobals";
             for (const auto& name : activeGlobals) {
-                if (stringsAreEqual(name, "ATMGlobals")) {
-                    base = name;
+                if (stringsAreEqual(name, targetBaseG)) {
+                    baseG = name;
                     break;
                 }
             }
+
             if (activeGlobals.size() == 1) {
                 verifyPairs.emplace_back(activeGlobals[0], activeGlobals[0]);
             } else {
                 for (const auto& cand : activeGlobals) {
-                    if (!stringsAreEqual(cand, base)) {
-                        verifyPairs.emplace_back(base, cand);
+                    if (!stringsAreEqual(cand, baseG)) {
+                        verifyPairs.emplace_back(baseG, cand);
                     }
                 }
             }
         }
+    }
 
-        if (verifyPairs.empty()) {
-            if (resolvedFunctors.size() >= 2) {
-                verifyPairs.emplace_back(resolvedFunctors[0], resolvedFunctors[1]);
-            } else if (registry.getNames().size() >= 2) {
-                verifyPairs.emplace_back(registry.getNames()[0], registry.getNames()[1]);
-            } else {
-                verifyPairs.emplace_back(registry.getNames()[0], registry.getNames()[0]);
-            }
+    if (verifyPairs.empty()) {
+        if (resolvedFunctors.size() >= 2) {
+            verifyPairs.emplace_back(resolvedFunctors[0], resolvedFunctors[1]);
+        } else if (registry.getNames().size() >= 2) {
+            verifyPairs.emplace_back(registry.getNames()[0], registry.getNames()[1]);
+        } else {
+            verifyPairs.emplace_back(registry.getNames()[0], registry.getNames()[0]);
         }
     }
 
