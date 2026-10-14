@@ -84,26 +84,36 @@ namespace mdLib {
 
   namespace detail6 {
     template <typename FloatType>
-    struct ThreadLocalDistBuffers {
-      std::vector<FloatType, autopas::AlignedAllocator<FloatType>> distsX;
-      std::vector<FloatType, autopas::AlignedAllocator<FloatType>> distsY;
-      std::vector<FloatType, autopas::AlignedAllocator<FloatType>> distsZ;
-      std::vector<FloatType, autopas::AlignedAllocator<FloatType>> distsR2;
+    struct ThreadLocalPackedNeighbors {
+      std::vector<size_t> indices;
+      std::vector<FloatType, autopas::AlignedAllocator<FloatType>> distX;
+      std::vector<FloatType, autopas::AlignedAllocator<FloatType>> distY;
+      std::vector<FloatType, autopas::AlignedAllocator<FloatType>> distZ;
+      std::vector<FloatType, autopas::AlignedAllocator<FloatType>> distSquared;
+      std::vector<double, autopas::AlignedAllocator<double>> isOwned;
+      std::vector<FloatType, autopas::AlignedAllocator<FloatType>> fx;
+      std::vector<FloatType, autopas::AlignedAllocator<FloatType>> fy;
+      std::vector<FloatType, autopas::AlignedAllocator<FloatType>> fz;
 
       void ensureCapacity(size_t n) {
-        if (distsX.size() < n) {
-          distsX.resize(n);
-          distsY.resize(n);
-          distsZ.resize(n);
-          distsR2.resize(n);
+        if (indices.size() < n) {
+          indices.resize(n);
+          distX.resize(n);
+          distY.resize(n);
+          distZ.resize(n);
+          distSquared.resize(n);
+          isOwned.resize(n);
+          fx.resize(n);
+          fy.resize(n);
+          fz.resize(n);
         }
       }
     };
 
     template <typename FloatType>
-    inline ThreadLocalDistBuffers<FloatType> &getThreadLocalDistBuffers() {
-      static thread_local ThreadLocalDistBuffers<FloatType> buffers;
-      return buffers;
+    inline ThreadLocalPackedNeighbors<FloatType> &getThreadLocalPackedNeighbors() {
+      static thread_local ThreadLocalPackedNeighbors<FloatType> packedNeighbors;
+      return packedNeighbors;
     }
   }  // namespace detail6
 
@@ -469,10 +479,23 @@ class AxilrodTellerMutoFunctor6
   void SoAFunctorPair(autopas::SoAView<SoAArraysType> soa1, autopas::SoAView<SoAArraysType> soa2, bool newton3) final {
     if (soa1.size() == 0 || soa2.size() == 0) return;
 
+    // 2-tier hybrid: Packed scalar (ATM4) for small cells to avoid SIMD overhead,
+    // and packed SIMD (ATM5) for larger cells for maximum vectorization throughput.
+    constexpr size_t simdThreshold = 56;
+    const bool useSIMD = (std::max(soa1.size(), soa2.size()) >= simdThreshold);
+
     if (newton3) {
-      SoAFunctorPairImpl<true>(soa1, soa2);
+      if (useSIMD) {
+        SoAFunctorPairPackedImpl<true, true>(soa1, soa2);
+      } else {
+        SoAFunctorPairPackedImpl<true, false>(soa1, soa2);
+      }
     } else {
-      SoAFunctorPairImpl<false>(soa1, soa2);
+      if (useSIMD) {
+        SoAFunctorPairPackedImpl<false, true>(soa1, soa2);
+      } else {
+        SoAFunctorPairPackedImpl<false, false>(soa1, soa2);
+      }
     }
   }
 
@@ -480,10 +503,23 @@ class AxilrodTellerMutoFunctor6
                         autopas::SoAView<SoAArraysType> soa3, bool newton3) final {
     if (soa1.size() == 0 || soa2.size() == 0 || soa3.size() == 0) return;
 
+    // 2-tier hybrid: Inverted scalar loop (ATM3) for small soa1 (< 8) to avoid SIMD overhead and enable early-branch,
+    // and inverted SIMD loop (ATM4) for soa1 >= 8 for maximum vectorization throughput.
+    constexpr size_t simdThreshold = 8;
+    const bool useSIMD = (soa1.size() >= simdThreshold);
+
     if (newton3) {
-      SoAFunctorTripleImpl<true>(soa1, soa2, soa3);
+      if (useSIMD) {
+        SoAFunctorTripleImpl<true, true>(soa1, soa2, soa3);
+      } else {
+        SoAFunctorTripleImpl<true, false>(soa1, soa2, soa3);
+      }
     } else {
-      SoAFunctorTripleImpl<false>(soa1, soa2, soa3);
+      if (useSIMD) {
+        SoAFunctorTripleImpl<false, true>(soa1, soa2, soa3);
+      } else {
+        SoAFunctorTripleImpl<false, false>(soa1, soa2, soa3);
+      }
     }
   }
 
@@ -710,63 +746,9 @@ class AxilrodTellerMutoFunctor6
   }
 
  private:
-  template <bool calcForceJK>
-  __attribute__((always_inline)) inline void SoAKernelMinFlops(
-      const SoAFloatPrecision distXIJ, const SoAFloatPrecision distYIJ, const SoAFloatPrecision distZIJ,
-      const SoAFloatPrecision distXJK, const SoAFloatPrecision distYJK, const SoAFloatPrecision distZJK,
-      const SoAFloatPrecision distSquaredIJ, const SoAFloatPrecision distSquaredJK,
-      const SoAFloatPrecision distSquaredKI, const SoAFloatPrecision invDistSquaredIJ,
-      const SoAFloatPrecision IJDotJK, const SoAFloatPrecision nu,
-      SoAFloatPrecision &forceIX, SoAFloatPrecision &forceIY, SoAFloatPrecision &forceIZ,
-      SoAFloatPrecision &forceJX, SoAFloatPrecision &forceJY, SoAFloatPrecision &forceJZ,
-      SoAFloatPrecision &forceKX, SoAFloatPrecision &forceKY, SoAFloatPrecision &forceKZ,
-      [[maybe_unused]] SoAFloatPrecision &potentialEnergy3) const {
-    const double allDistsSquared = distSquaredIJ * distSquaredJK * distSquaredKI;
-    const double allDistsTo5 = allDistsSquared * allDistsSquared * std::sqrt(allDistsSquared);
-    const double factor = nu / allDistsTo5;
 
-    const double IJDotKI = -(distSquaredIJ + IJDotJK);
-    const double JKDotKI = -(IJDotJK + distSquaredJK);
-    const double IJdotJKdotKI = IJDotJK * JKDotKI;
-    const double allDotProducts = IJDotKI * IJdotJKdotKI;
-
-    const double T = allDistsSquared - 5.0 * allDotProducts;
-    const double termIJ = T * invDistSquaredIJ;
-    const double termKI = T / distSquaredKI;
-
-    const double factorIDirectionJK = IJDotKI * (IJDotJK - JKDotKI);
-
-    const double finalFactorIJ = factor * (termIJ + termKI - 2.0 * IJdotJKdotKI);
-    const double finalFactorJK = factor * (factorIDirectionJK + IJdotJKdotKI - termKI);
-
-    forceIX = distXJK * finalFactorJK - distXIJ * finalFactorIJ;
-    forceIY = distYJK * finalFactorJK - distYIJ * finalFactorIJ;
-    forceIZ = distZJK * finalFactorJK - distZIJ * finalFactorIJ;
-
-    if constexpr (calcForceJK) {
-      const double termJK = T / distSquaredJK;
-      const double prodJK_KI = IJDotKI * JKDotKI;
-      const double factorJDirectionKI = IJDotJK * (JKDotKI - IJDotKI);
-
-      const double finalFactorIJOnJ = finalFactorIJ + finalFactorJK;
-      const double finalFactorJKOnJ = factor * (prodJK_KI - termJK - factorJDirectionKI);
-
-      forceJX = distXJK * finalFactorJKOnJ + distXIJ * finalFactorIJOnJ;
-      forceJY = distYJK * finalFactorJKOnJ + distYIJ * finalFactorIJOnJ;
-      forceJZ = distZJK * finalFactorJKOnJ + distZIJ * finalFactorIJOnJ;
-
-      forceKX = -(forceIX + forceJX);
-      forceKY = -(forceIY + forceJY);
-      forceKZ = -(forceIZ + forceJZ);
-    }
-
-    if constexpr (calculateGlobals) {
-      potentialEnergy3 = factor * (allDistsSquared - 3.0 * allDotProducts);
-    }
-  }
-
-  template <bool newton3>
-  void SoAFunctorPairImpl(autopas::SoAView<SoAArraysType> soa1, autopas::SoAView<SoAArraysType> soa2) {
+  template <bool newton3, bool useSIMD>
+  void SoAFunctorPairPackedImpl(autopas::SoAView<SoAArraysType> soa1, autopas::SoAView<SoAArraysType> soa2) {
     const auto threadnum = autopas::autopas_get_thread_num();
 
     const auto *const __restrict xptr1 = soa1.template begin<Particle_T::AttributeNames::posX>();
@@ -777,6 +759,11 @@ class AxilrodTellerMutoFunctor6
     const auto *const __restrict zptr2 = soa2.template begin<Particle_T::AttributeNames::posZ>();
     const auto *const __restrict ownedStatePtr1 = soa1.template begin<Particle_T::AttributeNames::ownershipState>();
     const auto *const __restrict ownedStatePtr2 = soa2.template begin<Particle_T::AttributeNames::ownershipState>();
+
+    const auto *const rawOwnedStatePtr1 = reinterpret_cast<const int64_t *>(ownedStatePtr1);
+    const auto *const rawOwnedStatePtr2 = reinterpret_cast<const int64_t *>(ownedStatePtr2);
+    constexpr auto rawDummyState = static_cast<int64_t>(autopas::OwnershipState::dummy);
+    constexpr auto rawOwnedState = static_cast<int64_t>(autopas::OwnershipState::owned);
 
     auto *const __restrict fxptr1 = soa1.template begin<Particle_T::AttributeNames::forceX>();
     auto *const __restrict fyptr1 = soa1.template begin<Particle_T::AttributeNames::forceY>();
@@ -809,323 +796,494 @@ class AxilrodTellerMutoFunctor6
       numTripletsCountingSum = (soa1Size * soa2Size * (soa1Size + soa2Size - 2)) / 2;
     }
 
+    auto &packedBuffers = detail6::getThreadLocalPackedNeighbors<SoAFloatPrecision>();
+    packedBuffers.ensureCapacity(std::max(soa1Size, soa2Size));
+    auto *const __restrict packedIndices = packedBuffers.indices.data();
+    auto *const __restrict packedDistX = packedBuffers.distX.data();
+    auto *const __restrict packedDistY = packedBuffers.distY.data();
+    auto *const __restrict packedDistZ = packedBuffers.distZ.data();
+    auto *const __restrict packedDistR2 = packedBuffers.distSquared.data();
+    auto *const __restrict packedIsOwned = packedBuffers.isOwned.data();
+    auto *const __restrict packedFx = packedBuffers.fx.data();
+    auto *const __restrict packedFy = packedBuffers.fy.data();
+    auto *const __restrict packedFz = packedBuffers.fz.data();
+
     // CASE 1: Particle i is in soa1, j and k are both in soa2
-    for (unsigned int i = 0; i < soa1Size; ++i) {
-      const auto ownedStateI = ownedStatePtr1[i];
-      if (ownedStateI == autopas::OwnershipState::dummy) {
+    for (size_t i = 0; i < soa1Size; ++i) {
+      const auto ownedStateI = rawOwnedStatePtr1[i];
+      if (ownedStateI == rawDummyState) {
         continue;
+      }
+      const double isOwnedI = (ownedStateI == rawOwnedState) ? 1.0 : 0.0;
+
+      const SoAFloatPrecision xi = xptr1[i];
+      const SoAFloatPrecision yi = yptr1[i];
+      const SoAFloatPrecision zi = zptr1[i];
+
+      size_t numNeighbors = 0;
+      for (size_t j = 0; j < soa2Size; ++j) {
+        const auto ownedStateJ = rawOwnedStatePtr2[j];
+        if (ownedStateJ == rawDummyState) {
+          continue;
+        }
+        const SoAFloatPrecision distXIJ = xptr2[j] - xi;
+        const SoAFloatPrecision distYIJ = yptr2[j] - yi;
+        const SoAFloatPrecision distZIJ = zptr2[j] - zi;
+        const SoAFloatPrecision distSquaredIJ = distXIJ * distXIJ + distYIJ * distYIJ + distZIJ * distZIJ;
+
+        if (distSquaredIJ <= cutoffSquared) {
+          packedIndices[numNeighbors] = j;
+          packedDistX[numNeighbors] = distXIJ;
+          packedDistY[numNeighbors] = distYIJ;
+          packedDistZ[numNeighbors] = distZIJ;
+          packedDistR2[numNeighbors] = distSquaredIJ;
+          packedIsOwned[numNeighbors] = (ownedStateJ == rawOwnedState) ? 1.0 : 0.0;
+          ++numNeighbors;
+        }
+      }
+
+      if (numNeighbors < 2) {
+        continue;
+      }
+
+      if constexpr (newton3) {
+        std::fill_n(packedFx, numNeighbors, static_cast<SoAFloatPrecision>(0.0));
+        std::fill_n(packedFy, numNeighbors, static_cast<SoAFloatPrecision>(0.0));
+        std::fill_n(packedFz, numNeighbors, static_cast<SoAFloatPrecision>(0.0));
       }
 
       SoAFloatPrecision fXAccI = 0.;
       SoAFloatPrecision fYAccI = 0.;
       SoAFloatPrecision fZAccI = 0.;
 
-      const SoAFloatPrecision xi = xptr1[i];
-      const SoAFloatPrecision yi = yptr1[i];
-      const SoAFloatPrecision zi = zptr1[i];
+      for (size_t j = 0; j < numNeighbors - 1; ++j) {
+        const SoAFloatPrecision distXIJ = packedDistX[j];
+        const SoAFloatPrecision distYIJ = packedDistY[j];
+        const SoAFloatPrecision distZIJ = packedDistZ[j];
+        const SoAFloatPrecision distSquaredIJ = packedDistR2[j];
+        const double isOwnedJ = packedIsOwned[j];
 
-      for (unsigned int j = 0; j < soa2Size; ++j) {
-        const auto ownedStateJ = ownedStatePtr2[j];
-        if (ownedStateJ == autopas::OwnershipState::dummy) {
-          continue;
-        }
-
-        const SoAFloatPrecision xj = xptr2[j];
-        const SoAFloatPrecision yj = yptr2[j];
-        const SoAFloatPrecision zj = zptr2[j];
-
-        const SoAFloatPrecision distXIJ = xj - xi;
-        const SoAFloatPrecision distYIJ = yj - yi;
-        const SoAFloatPrecision distZIJ = zj - zi;
-        const SoAFloatPrecision distSquaredIJ = distXIJ * distXIJ + distYIJ * distYIJ + distZIJ * distZIJ;
-
-        if constexpr (countFLOPs) {
-          ++numDistanceCalculationSum;
-        }
-        if (distSquaredIJ > cutoffSquared) {
-          continue;
-        }
-
-        const SoAFloatPrecision invDistSquaredIJ = 1.0 / distSquaredIJ;
-
-        for (unsigned int k = j + 1; k < soa2Size; ++k) {
-          const auto ownedStateK = ownedStatePtr2[k];
-          if (ownedStateK == autopas::OwnershipState::dummy) {
-            continue;
-          }
-
-          const SoAFloatPrecision xk = xptr2[k];
-          const SoAFloatPrecision yk = yptr2[k];
-          const SoAFloatPrecision zk = zptr2[k];
-
-          const SoAFloatPrecision distXJK = xk - xj;
-          const SoAFloatPrecision distYJK = yk - yj;
-          const SoAFloatPrecision distZJK = zk - zj;
-          const SoAFloatPrecision distSquaredJK = distXJK * distXJK + distYJK * distYJK + distZJK * distZJK;
-
-          if constexpr (countFLOPs) {
-            ++numDistanceCalculationSum;
-          }
-          if (distSquaredJK > cutoffSquared) {
-            continue;
-          }
-
-          const SoAFloatPrecision IJDotJK = distXIJ * distXJK + distYIJ * distYJK + distZIJ * distZJK;
-          const SoAFloatPrecision distSquaredKI = distSquaredIJ + distSquaredJK + 2.0 * IJDotJK;
-
-          if constexpr (countFLOPs) {
-            ++numDistanceCalculationSum;
-          }
-          if (distSquaredKI > cutoffSquared) {
-            continue;
-          }
-
-          SoAFloatPrecision nu = const_nu;
-          if constexpr (useMixing) {
-            nu = 3.0 * _PPLibrary->getMixingNu(typeptr1[i], typeptr2[j], typeptr2[k]);
-          }
-
-          SoAFloatPrecision forceIX = 0., forceIY = 0., forceIZ = 0.;
-          [[maybe_unused]] SoAFloatPrecision forceJX = 0., forceJY = 0., forceJZ = 0.;
-          [[maybe_unused]] SoAFloatPrecision forceKX = 0., forceKY = 0., forceKZ = 0.;
-          [[maybe_unused]] SoAFloatPrecision potentialEnergy3 = 0.;
-
-          SoAKernelMinFlops<newton3>(distXIJ, distYIJ, distZIJ, distXJK, distYJK, distZJK,
-                                    distSquaredIJ, distSquaredJK, distSquaredKI, invDistSquaredIJ,
-                                    IJDotJK, nu,
-                                    forceIX, forceIY, forceIZ, forceJX, forceJY, forceJZ,
-                                    forceKX, forceKY, forceKZ, potentialEnergy3);
-
-          fXAccI += forceIX;
-          fYAccI += forceIY;
-          fZAccI += forceIZ;
-
-          if constexpr (newton3) {
-            fxptr2[j] += forceJX;
-            fyptr2[j] += forceJY;
-            fzptr2[j] += forceJZ;
-
-            fxptr2[k] += forceKX;
-            fyptr2[k] += forceKY;
-            fzptr2[k] += forceKZ;
-
-            if constexpr (countFLOPs) {
-              ++numKernelCallsN3Sum;
-            }
-
-            if constexpr (calculateGlobals) {
-              if (ownedStateI == autopas::OwnershipState::owned) {
-                potentialEnergySum += potentialEnergy3;
-                virialSumX += forceIX * (-distXJK - 2.0 * distXIJ);
-                virialSumY += forceIY * (-distYJK - 2.0 * distYIJ);
-                virialSumZ += forceIZ * (-distZJK - 2.0 * distZIJ);
-              }
-              if (ownedStateJ == autopas::OwnershipState::owned) {
-                potentialEnergySum += potentialEnergy3;
-                virialSumX += forceJX * (distXIJ - distXJK);
-                virialSumY += forceJY * (distYIJ - distYJK);
-                virialSumZ += forceJZ * (distZIJ - distZJK);
-              }
-              if (ownedStateK == autopas::OwnershipState::owned) {
-                potentialEnergySum += potentialEnergy3;
-                virialSumX += forceKX * (2.0 * distXJK + distXIJ);
-                virialSumY += forceKY * (2.0 * distYJK + distYIJ);
-                virialSumZ += forceKZ * (2.0 * distZJK + distZIJ);
-              }
-              if constexpr (countFLOPs) {
-                ++numGlobalCalcsN3Sum;
-              }
-            }
-          } else {
-            if constexpr (countFLOPs) {
-              ++numKernelCallsNoN3Sum;
-            }
-            if constexpr (calculateGlobals) {
-              if (ownedStateI == autopas::OwnershipState::owned) {
-                potentialEnergySum += potentialEnergy3;
-                virialSumX += forceIX * (-distXJK - 2.0 * distXIJ);
-                virialSumY += forceIY * (-distYJK - 2.0 * distYIJ);
-                virialSumZ += forceIZ * (-distZJK - 2.0 * distZIJ);
-              }
-              if constexpr (countFLOPs) {
-                ++numGlobalCalcsNoN3Sum;
-              }
-            }
-          }
-        }
-      }
-
-      fxptr1[i] += fXAccI;
-      fyptr1[i] += fYAccI;
-      fzptr1[i] += fZAccI;
-    }
-
-    // CASE 2: Particles i and j are both in soa1, k is in soa2
-    for (unsigned int i = 0; i < soa1Size; ++i) {
-      const auto ownedStateI = ownedStatePtr1[i];
-      if (ownedStateI == autopas::OwnershipState::dummy) {
-        continue;
-      }
-
-      const SoAFloatPrecision xi = xptr1[i];
-      const SoAFloatPrecision yi = yptr1[i];
-      const SoAFloatPrecision zi = zptr1[i];
-
-      SoAFloatPrecision fXAccI = 0.;
-      SoAFloatPrecision fYAccI = 0.;
-      SoAFloatPrecision fZAccI = 0.;
-
-      for (unsigned int j = i + 1; j < soa1Size; ++j) {
-        const auto ownedStateJ = ownedStatePtr1[j];
-        if (ownedStateJ == autopas::OwnershipState::dummy) {
-          continue;
-        }
-
-        const SoAFloatPrecision xj = xptr1[j];
-        const SoAFloatPrecision yj = yptr1[j];
-        const SoAFloatPrecision zj = zptr1[j];
-
-        const SoAFloatPrecision distXIJ = xj - xi;
-        const SoAFloatPrecision distYIJ = yj - yi;
-        const SoAFloatPrecision distZIJ = zj - zi;
-        const SoAFloatPrecision distSquaredIJ = distXIJ * distXIJ + distYIJ * distYIJ + distZIJ * distZIJ;
-
-        if constexpr (countFLOPs) {
-          ++numDistanceCalculationSum;
-        }
-        if (distSquaredIJ > cutoffSquared) {
-          continue;
-        }
-
-        const SoAFloatPrecision invDistSquaredIJ = 1.0 / distSquaredIJ;
+        const double invDistSquaredIJ = 1.0 / distSquaredIJ;
 
         SoAFloatPrecision fXAccJ = 0.;
         SoAFloatPrecision fYAccJ = 0.;
         SoAFloatPrecision fZAccJ = 0.;
 
-        for (unsigned int k = 0; k < soa2Size; ++k) {
-          const auto ownedStateK = ownedStatePtr2[k];
-          if (ownedStateK == autopas::OwnershipState::dummy) {
-            continue;
-          }
-
-          const SoAFloatPrecision xk = xptr2[k];
-          const SoAFloatPrecision yk = yptr2[k];
-          const SoAFloatPrecision zk = zptr2[k];
-
-          const SoAFloatPrecision distXJK = xk - xj;
-          const SoAFloatPrecision distYJK = yk - yj;
-          const SoAFloatPrecision distZJK = zk - zj;
+        if constexpr (useSIMD) {
+          #pragma omp simd reduction(+: fXAccI, fYAccI, fZAccI, fXAccJ, fYAccJ, fZAccJ, potentialEnergySum, virialSumX, virialSumY, virialSumZ) simdlen(8)
+          for (size_t k = j + 1; k < numNeighbors; ++k) {
+          const SoAFloatPrecision distXIK = packedDistX[k];
+          const SoAFloatPrecision distYIK = packedDistY[k];
+          const SoAFloatPrecision distZIK = packedDistZ[k];
+          const SoAFloatPrecision distSquaredKI = packedDistR2[k];
+          const double isOwnedK = packedIsOwned[k];
+                    const SoAFloatPrecision distXJK = distXIK - distXIJ;
+          const SoAFloatPrecision distYJK = distYIK - distYIJ;
+          const SoAFloatPrecision distZJK = distZIK - distZIJ;
           const SoAFloatPrecision distSquaredJK = distXJK * distXJK + distYJK * distYJK + distZJK * distZJK;
-
-          if constexpr (countFLOPs) {
-            ++numDistanceCalculationSum;
-          }
-          if (distSquaredJK > cutoffSquared) {
-            continue;
-          }
-
-          const SoAFloatPrecision IJDotJK = distXIJ * distXJK + distYIJ * distYJK + distZIJ * distZJK;
-          const SoAFloatPrecision distSquaredKI = distSquaredIJ + distSquaredJK + 2.0 * IJDotJK;
-
-          if constexpr (countFLOPs) {
-            ++numDistanceCalculationSum;
-          }
-          if (distSquaredKI > cutoffSquared) {
-            continue;
-          }
-
-          SoAFloatPrecision nu = const_nu;
-          if constexpr (useMixing) {
-            nu = 3.0 * _PPLibrary->getMixingNu(typeptr1[i], typeptr1[j], typeptr2[k]);
-          }
-
-          SoAFloatPrecision forceIX = 0., forceIY = 0., forceIZ = 0.;
-          SoAFloatPrecision forceJX = 0., forceJY = 0., forceJZ = 0.;
-          [[maybe_unused]] SoAFloatPrecision forceKX = 0., forceKY = 0., forceKZ = 0.;
-          [[maybe_unused]] SoAFloatPrecision potentialEnergy3 = 0.;
-
-          // Even if newton3 is false, forces on j must be computed because j is in soa1
-          SoAKernelMinFlops<true>(distXIJ, distYIJ, distZIJ, distXJK, distYJK, distZJK,
-                                 distSquaredIJ, distSquaredJK, distSquaredKI, invDistSquaredIJ,
-                                 IJDotJK, nu,
-                                 forceIX, forceIY, forceIZ, forceJX, forceJY, forceJZ,
-                                 forceKX, forceKY, forceKZ, potentialEnergy3);
-
-          fXAccI += forceIX;
+                    const double mask = (distSquaredJK <= cutoffSquared) ? 1.0 : 0.0;
+          const double safeDistSquaredJK = distSquaredJK > 0.0 ? distSquaredJK : 1.0;
+                    const SoAFloatPrecision IJDotJK = distXIJ * distXJK + distYIJ * distYJK + distZIJ * distZJK;
+                    double nu = const_nu;
+                    const double allDistsSquared = distSquaredIJ * safeDistSquaredJK * distSquaredKI;
+          const double allDistsTo5 = allDistsSquared * allDistsSquared * std::sqrt(allDistsSquared);
+          const double factor = (nu / allDistsTo5) * mask;
+                    const double IJDotKI = -(distSquaredIJ + IJDotJK);
+          const double JKDotKI = -(IJDotJK + distSquaredJK);
+          const double IJdotJKdotKI = IJDotJK * JKDotKI;
+          const double allDotProducts = IJDotKI * IJdotJKdotKI;
+                    const double T = allDistsSquared - 5.0 * allDotProducts;
+          const double termIJ = T * invDistSquaredIJ;
+          const double termKI = T / distSquaredKI;
+                    const double factorIDirectionJK = IJDotKI * (IJDotJK - JKDotKI);
+                    const double finalFactorIJ = factor * (termIJ + termKI - 2.0 * IJdotJKdotKI);
+          const double finalFactorJK = factor * (factorIDirectionJK + IJdotJKdotKI - termKI);
+                    const double forceIX = distXJK * finalFactorJK - distXIJ * finalFactorIJ;
+          const double forceIY = distYJK * finalFactorJK - distYIJ * finalFactorIJ;
+          const double forceIZ = distZJK * finalFactorJK - distZIJ * finalFactorIJ;
+                    fXAccI += forceIX;
           fYAccI += forceIY;
           fZAccI += forceIZ;
-
-          fXAccJ += forceJX;
+                    if constexpr (newton3) {
+          const double termJK = T / safeDistSquaredJK;
+          const double prodJK_KI = IJDotKI * JKDotKI;
+          const double factorJDirectionKI = IJDotJK * (JKDotKI - IJDotKI);
+                    const double finalFactorIJOnJ = finalFactorIJ + finalFactorJK;
+          const double finalFactorJKOnJ = factor * (prodJK_KI - termJK - factorJDirectionKI);
+                    const double forceJX = distXJK * finalFactorJKOnJ + distXIJ * finalFactorIJOnJ;
+          const double forceJY = distYJK * finalFactorJKOnJ + distYIJ * finalFactorIJOnJ;
+          const double forceJZ = distZJK * finalFactorJKOnJ + distZIJ * finalFactorIJOnJ;
+                    const double forceKX = -(forceIX + forceJX);
+          const double forceKY = -(forceIY + forceJY);
+          const double forceKZ = -(forceIZ + forceJZ);
+                    fXAccJ += forceJX;
           fYAccJ += forceJY;
           fZAccJ += forceJZ;
-
-          if constexpr (newton3) {
-            fxptr2[k] += forceKX;
-            fyptr2[k] += forceKY;
-            fzptr2[k] += forceKZ;
-
-            if constexpr (countFLOPs) {
-              ++numKernelCallsN3Sum;
-            }
-
-            if constexpr (calculateGlobals) {
-              if (ownedStateI == autopas::OwnershipState::owned) {
-                potentialEnergySum += potentialEnergy3;
-                virialSumX += forceIX * (-distXJK - 2.0 * distXIJ);
-                virialSumY += forceIY * (-distYJK - 2.0 * distYIJ);
-                virialSumZ += forceIZ * (-distZJK - 2.0 * distZIJ);
-              }
-              if (ownedStateJ == autopas::OwnershipState::owned) {
-                potentialEnergySum += potentialEnergy3;
-                virialSumX += forceJX * (distXIJ - distXJK);
-                virialSumY += forceJY * (distYIJ - distYJK);
-                virialSumZ += forceJZ * (distZIJ - distZJK);
-              }
-              if (ownedStateK == autopas::OwnershipState::owned) {
-                potentialEnergySum += potentialEnergy3;
-                virialSumX += forceKX * (2.0 * distXJK + distXIJ);
-                virialSumY += forceKY * (2.0 * distYJK + distYIJ);
-                virialSumZ += forceKZ * (2.0 * distZJK + distZIJ);
-              }
-              if constexpr (countFLOPs) {
-                ++numGlobalCalcsN3Sum;
-              }
-            }
+                    packedFx[k] += forceKX;
+          packedFy[k] += forceKY;
+          packedFz[k] += forceKZ;
+                    if constexpr (calculateGlobals) {
+          const double potentialEnergy3 = factor * (allDistsSquared - 3.0 * allDotProducts);
+          potentialEnergySum += potentialEnergy3 * (isOwnedI + isOwnedJ + isOwnedK);
+                    virialSumX += (forceIX * (-distXJK - 2.0 * distXIJ) * isOwnedI +
+          forceJX * (distXIJ - distXJK) * isOwnedJ +
+          forceKX * (2.0 * distXJK + distXIJ) * isOwnedK);
+          virialSumY += (forceIY * (-distYJK - 2.0 * distYIJ) * isOwnedI +
+          forceJY * (distYIJ - distYJK) * isOwnedJ +
+          forceKY * (2.0 * distYJK + distYIJ) * isOwnedK);
+          virialSumZ += (forceIZ * (-distZJK - 2.0 * distZIJ) * isOwnedI +
+          forceJZ * (distZIJ - distZJK) * isOwnedJ +
+          forceKZ * (2.0 * distZJK + distZIJ) * isOwnedK);
+          }
           } else {
-            if constexpr (countFLOPs) {
-              ++numKernelCallsNoN3Sum;
-            }
-            if (ownedStateI == autopas::OwnershipState::owned) {
-              potentialEnergySum += potentialEnergy3;
-              virialSumX += forceIX * (-distXJK - 2.0 * distXIJ);
-              virialSumY += forceIY * (-distYJK - 2.0 * distYIJ);
-              virialSumZ += forceIZ * (-distZJK - 2.0 * distZIJ);
-            }
-            if (ownedStateJ == autopas::OwnershipState::owned) {
-              potentialEnergySum += potentialEnergy3;
-              virialSumX += forceJX * (distXIJ - distXJK);
-              virialSumY += forceJY * (distYIJ - distYJK);
-              virialSumZ += forceJZ * (distZIJ - distZJK);
-            }
-            if constexpr (countFLOPs) {
-              if constexpr (newton3) {
-                ++numGlobalCalcsN3Sum;
-              } else {
-                ++numGlobalCalcsNoN3Sum;
-              }
-            }
+          if constexpr (calculateGlobals) {
+          const double potentialEnergy3 = factor * (allDistsSquared - 3.0 * allDotProducts);
+          potentialEnergySum += potentialEnergy3 * isOwnedI;
+                    virialSumX += forceIX * (-distXJK - 2.0 * distXIJ) * isOwnedI;
+          virialSumY += forceIY * (-distYJK - 2.0 * distYIJ) * isOwnedI;
+          virialSumZ += forceIZ * (-distZJK - 2.0 * distZIJ) * isOwnedI;
+          }
+          }
+          }
+        } else {
+          for (size_t k = j + 1; k < numNeighbors; ++k) {
+          const SoAFloatPrecision distXIK = packedDistX[k];
+          const SoAFloatPrecision distYIK = packedDistY[k];
+          const SoAFloatPrecision distZIK = packedDistZ[k];
+          const SoAFloatPrecision distSquaredKI = packedDistR2[k];
+          const double isOwnedK = packedIsOwned[k];
+                    const SoAFloatPrecision distXJK = distXIK - distXIJ;
+          const SoAFloatPrecision distYJK = distYIK - distYIJ;
+          const SoAFloatPrecision distZJK = distZIK - distZIJ;
+          const SoAFloatPrecision distSquaredJK = distXJK * distXJK + distYJK * distYJK + distZJK * distZJK;
+                    const double mask = (distSquaredJK <= cutoffSquared) ? 1.0 : 0.0;
+          const double safeDistSquaredJK = distSquaredJK > 0.0 ? distSquaredJK : 1.0;
+                    const SoAFloatPrecision IJDotJK = distXIJ * distXJK + distYIJ * distYJK + distZIJ * distZJK;
+                    double nu = const_nu;
+                    const double allDistsSquared = distSquaredIJ * safeDistSquaredJK * distSquaredKI;
+          const double allDistsTo5 = allDistsSquared * allDistsSquared * std::sqrt(allDistsSquared);
+          const double factor = (nu / allDistsTo5) * mask;
+                    const double IJDotKI = -(distSquaredIJ + IJDotJK);
+          const double JKDotKI = -(IJDotJK + distSquaredJK);
+          const double IJdotJKdotKI = IJDotJK * JKDotKI;
+          const double allDotProducts = IJDotKI * IJdotJKdotKI;
+                    const double T = allDistsSquared - 5.0 * allDotProducts;
+          const double termIJ = T * invDistSquaredIJ;
+          const double termKI = T / distSquaredKI;
+                    const double factorIDirectionJK = IJDotKI * (IJDotJK - JKDotKI);
+                    const double finalFactorIJ = factor * (termIJ + termKI - 2.0 * IJdotJKdotKI);
+          const double finalFactorJK = factor * (factorIDirectionJK + IJdotJKdotKI - termKI);
+                    const double forceIX = distXJK * finalFactorJK - distXIJ * finalFactorIJ;
+          const double forceIY = distYJK * finalFactorJK - distYIJ * finalFactorIJ;
+          const double forceIZ = distZJK * finalFactorJK - distZIJ * finalFactorIJ;
+                    fXAccI += forceIX;
+          fYAccI += forceIY;
+          fZAccI += forceIZ;
+                    if constexpr (newton3) {
+          const double termJK = T / safeDistSquaredJK;
+          const double prodJK_KI = IJDotKI * JKDotKI;
+          const double factorJDirectionKI = IJDotJK * (JKDotKI - IJDotKI);
+                    const double finalFactorIJOnJ = finalFactorIJ + finalFactorJK;
+          const double finalFactorJKOnJ = factor * (prodJK_KI - termJK - factorJDirectionKI);
+                    const double forceJX = distXJK * finalFactorJKOnJ + distXIJ * finalFactorIJOnJ;
+          const double forceJY = distYJK * finalFactorJKOnJ + distYIJ * finalFactorIJOnJ;
+          const double forceJZ = distZJK * finalFactorJKOnJ + distZIJ * finalFactorIJOnJ;
+                    const double forceKX = -(forceIX + forceJX);
+          const double forceKY = -(forceIY + forceJY);
+          const double forceKZ = -(forceIZ + forceJZ);
+                    fXAccJ += forceJX;
+          fYAccJ += forceJY;
+          fZAccJ += forceJZ;
+                    packedFx[k] += forceKX;
+          packedFy[k] += forceKY;
+          packedFz[k] += forceKZ;
+                    if constexpr (calculateGlobals) {
+          const double potentialEnergy3 = factor * (allDistsSquared - 3.0 * allDotProducts);
+          potentialEnergySum += potentialEnergy3 * (isOwnedI + isOwnedJ + isOwnedK);
+                    virialSumX += (forceIX * (-distXJK - 2.0 * distXIJ) * isOwnedI +
+          forceJX * (distXIJ - distXJK) * isOwnedJ +
+          forceKX * (2.0 * distXJK + distXIJ) * isOwnedK);
+          virialSumY += (forceIY * (-distYJK - 2.0 * distYIJ) * isOwnedI +
+          forceJY * (distYIJ - distYJK) * isOwnedJ +
+          forceKY * (2.0 * distYJK + distYIJ) * isOwnedK);
+          virialSumZ += (forceIZ * (-distZJK - 2.0 * distZIJ) * isOwnedI +
+          forceJZ * (distZIJ - distZJK) * isOwnedJ +
+          forceKZ * (2.0 * distZJK + distZIJ) * isOwnedK);
+          }
+          } else {
+          if constexpr (calculateGlobals) {
+          const double potentialEnergy3 = factor * (allDistsSquared - 3.0 * allDotProducts);
+          potentialEnergySum += potentialEnergy3 * isOwnedI;
+                    virialSumX += forceIX * (-distXJK - 2.0 * distXIJ) * isOwnedI;
+          virialSumY += forceIY * (-distYJK - 2.0 * distYIJ) * isOwnedI;
+          virialSumZ += forceIZ * (-distZJK - 2.0 * distZIJ) * isOwnedI;
+          }
+          }
           }
         }
 
-        fxptr1[j] += fXAccJ;
-        fyptr1[j] += fYAccJ;
-        fzptr1[j] += fZAccJ;
+        if constexpr (newton3) {
+          packedFx[j] += fXAccJ;
+          packedFy[j] += fYAccJ;
+          packedFz[j] += fZAccJ;
+        }
       }
 
       fxptr1[i] += fXAccI;
       fyptr1[i] += fYAccI;
       fzptr1[i] += fZAccI;
+
+      if constexpr (newton3) {
+        for (size_t n = 0; n < numNeighbors; ++n) {
+          const size_t origJ = packedIndices[n];
+          fxptr2[origJ] += packedFx[n];
+          fyptr2[origJ] += packedFy[n];
+          fzptr2[origJ] += packedFz[n];
+        }
+      }
+    }
+
+    // CASE 2: Particles i and j are both in soa1, k is in soa2
+    for (size_t k = 0; k < soa2Size; ++k) {
+      const auto ownedStateK = rawOwnedStatePtr2[k];
+      if (ownedStateK == rawDummyState) {
+        continue;
+      }
+      const double isOwnedK = (ownedStateK == rawOwnedState) ? 1.0 : 0.0;
+
+      const SoAFloatPrecision xk = xptr2[k];
+      const SoAFloatPrecision yk = yptr2[k];
+      const SoAFloatPrecision zk = zptr2[k];
+
+      size_t numNeighbors = 0;
+      for (size_t i = 0; i < soa1Size; ++i) {
+        const auto ownedStateI = rawOwnedStatePtr1[i];
+        if (ownedStateI == rawDummyState) {
+          continue;
+        }
+        const SoAFloatPrecision distXKI = xptr1[i] - xk;
+        const SoAFloatPrecision distYKI = yptr1[i] - yk;
+        const SoAFloatPrecision distZKI = zptr1[i] - zk;
+        const SoAFloatPrecision distSquaredKI = distXKI * distXKI + distYKI * distYKI + distZKI * distZKI;
+
+        if (distSquaredKI <= cutoffSquared) {
+          packedIndices[numNeighbors] = i;
+          packedDistX[numNeighbors] = distXKI;
+          packedDistY[numNeighbors] = distYKI;
+          packedDistZ[numNeighbors] = distZKI;
+          packedDistR2[numNeighbors] = distSquaredKI;
+          packedIsOwned[numNeighbors] = (ownedStateI == rawOwnedState) ? 1.0 : 0.0;
+          ++numNeighbors;
+        }
+      }
+
+      if (numNeighbors < 2) {
+        continue;
+      }
+
+      std::fill_n(packedFx, numNeighbors, static_cast<SoAFloatPrecision>(0.0));
+      std::fill_n(packedFy, numNeighbors, static_cast<SoAFloatPrecision>(0.0));
+      std::fill_n(packedFz, numNeighbors, static_cast<SoAFloatPrecision>(0.0));
+
+      SoAFloatPrecision fXAccK = 0.;
+      SoAFloatPrecision fYAccK = 0.;
+      SoAFloatPrecision fZAccK = 0.;
+
+      for (size_t i = 0; i < numNeighbors - 1; ++i) {
+        const SoAFloatPrecision distXKI = packedDistX[i];
+        const SoAFloatPrecision distYKI = packedDistY[i];
+        const SoAFloatPrecision distZKI = packedDistZ[i];
+        const SoAFloatPrecision distSquaredKI = packedDistR2[i];
+        const double isOwnedI = packedIsOwned[i];
+
+        SoAFloatPrecision fXAccI = 0.;
+        SoAFloatPrecision fYAccI = 0.;
+        SoAFloatPrecision fZAccI = 0.;
+
+        if constexpr (useSIMD) {
+          #pragma omp simd reduction(+: fXAccK, fYAccK, fZAccK, fXAccI, fYAccI, fZAccI, potentialEnergySum, virialSumX, virialSumY, virialSumZ) simdlen(8)
+          for (size_t j = i + 1; j < numNeighbors; ++j) {
+          const SoAFloatPrecision distXKJ = packedDistX[j];
+          const SoAFloatPrecision distYKJ = packedDistY[j];
+          const SoAFloatPrecision distZKJ = packedDistZ[j];
+          const SoAFloatPrecision distSquaredJK = packedDistR2[j];
+          const double isOwnedJ = packedIsOwned[j];
+                    const SoAFloatPrecision distXIJ = distXKJ - distXKI;
+          const SoAFloatPrecision distYIJ = distYKJ - distYKI;
+          const SoAFloatPrecision distZIJ = distZKJ - distZKI;
+          const SoAFloatPrecision distSquaredIJ = distXIJ * distXIJ + distYIJ * distYIJ + distZIJ * distZIJ;
+                    const double mask = (distSquaredIJ <= cutoffSquared) ? 1.0 : 0.0;
+                    const double safeDistSquaredIJ = distSquaredIJ > 0.0 ? distSquaredIJ : 1.0;
+          const double invDistSquaredIJ = 1.0 / safeDistSquaredIJ;
+                    const SoAFloatPrecision distXJK = -distXKJ;
+          const SoAFloatPrecision distYJK = -distYKJ;
+          const SoAFloatPrecision distZJK = -distZKJ;
+                    const SoAFloatPrecision IJDotJK = distXIJ * distXJK + distYIJ * distYJK + distZIJ * distZJK;
+                    double nu = const_nu;
+                    const double allDistsSquared = safeDistSquaredIJ * distSquaredJK * distSquaredKI;
+          const double allDistsTo5 = allDistsSquared * allDistsSquared * std::sqrt(allDistsSquared);
+          const double factor = (nu / allDistsTo5) * mask;
+                    const double IJDotKI = -(safeDistSquaredIJ + IJDotJK);
+          const double JKDotKI = -(IJDotJK + distSquaredJK);
+          const double IJdotJKdotKI = IJDotJK * JKDotKI;
+          const double allDotProducts = IJDotKI * IJdotJKdotKI;
+                    const double T = allDistsSquared - 5.0 * allDotProducts;
+          const double termIJ = T * invDistSquaredIJ;
+          const double termKI = T / distSquaredKI;
+          const double termJK = T / distSquaredJK;
+                    const double factorIDirectionJK = IJDotKI * (IJDotJK - JKDotKI);
+                    const double finalFactorIJ = factor * (termIJ + termKI - 2.0 * IJdotJKdotKI);
+          const double finalFactorJK = factor * (factorIDirectionJK + IJdotJKdotKI - termKI);
+                    const double forceIX = distXJK * finalFactorJK - distXIJ * finalFactorIJ;
+          const double forceIY = distYJK * finalFactorJK - distYIJ * finalFactorIJ;
+          const double forceIZ = distZJK * finalFactorJK - distZIJ * finalFactorIJ;
+                    const double prodJK_KI = IJDotKI * JKDotKI;
+          const double factorJDirectionKI = IJDotJK * (JKDotKI - IJDotKI);
+                    const double finalFactorIJOnJ = finalFactorIJ + finalFactorJK;
+          const double finalFactorJKOnJ = factor * (prodJK_KI - termJK - factorJDirectionKI);
+                    const double forceJX = distXJK * finalFactorJKOnJ + distXIJ * finalFactorIJOnJ;
+          const double forceJY = distYJK * finalFactorJKOnJ + distYIJ * finalFactorIJOnJ;
+          const double forceJZ = distZJK * finalFactorJKOnJ + distZIJ * finalFactorIJOnJ;
+                    const double forceKX = -(forceIX + forceJX);
+          const double forceKY = -(forceIY + forceJY);
+          const double forceKZ = -(forceIZ + forceJZ);
+                    fXAccI += forceIX;
+          fYAccI += forceIY;
+          fZAccI += forceIZ;
+                    packedFx[j] += forceJX;
+          packedFy[j] += forceJY;
+          packedFz[j] += forceJZ;
+                    if constexpr (newton3) {
+          fXAccK += forceKX;
+          fYAccK += forceKY;
+          fZAccK += forceKZ;
+                    if constexpr (calculateGlobals) {
+          const double potentialEnergy3 = factor * (allDistsSquared - 3.0 * allDotProducts);
+          potentialEnergySum += potentialEnergy3 * (isOwnedI + isOwnedJ + isOwnedK);
+                    virialSumX += (forceIX * (-distXJK - 2.0 * distXIJ) * isOwnedI +
+          forceJX * (distXIJ - distXJK) * isOwnedJ +
+          forceKX * (2.0 * distXJK + distXIJ) * isOwnedK);
+          virialSumY += (forceIY * (-distYJK - 2.0 * distYIJ) * isOwnedI +
+          forceJY * (distYIJ - distYJK) * isOwnedJ +
+          forceKY * (2.0 * distYJK + distYIJ) * isOwnedK);
+          virialSumZ += (forceIZ * (-distZJK - 2.0 * distZIJ) * isOwnedI +
+          forceJZ * (distZIJ - distZJK) * isOwnedJ +
+          forceKZ * (2.0 * distZJK + distZIJ) * isOwnedK);
+          }
+          } else {
+          if constexpr (calculateGlobals) {
+          const double potentialEnergy3 = factor * (allDistsSquared - 3.0 * allDotProducts);
+          potentialEnergySum += potentialEnergy3 * (isOwnedI + isOwnedJ);
+                    virialSumX += (forceIX * (-distXJK - 2.0 * distXIJ) * isOwnedI +
+          forceJX * (distXIJ - distXJK) * isOwnedJ);
+          virialSumY += (forceIY * (-distYJK - 2.0 * distYIJ) * isOwnedI +
+          forceJY * (distYIJ - distYJK) * isOwnedJ);
+          virialSumZ += (forceIZ * (-distZJK - 2.0 * distZIJ) * isOwnedI +
+          forceJZ * (distZIJ - distZJK) * isOwnedJ);
+          }
+          }
+          }
+        } else {
+          for (size_t j = i + 1; j < numNeighbors; ++j) {
+          const SoAFloatPrecision distXKJ = packedDistX[j];
+          const SoAFloatPrecision distYKJ = packedDistY[j];
+          const SoAFloatPrecision distZKJ = packedDistZ[j];
+          const SoAFloatPrecision distSquaredJK = packedDistR2[j];
+          const double isOwnedJ = packedIsOwned[j];
+                    const SoAFloatPrecision distXIJ = distXKJ - distXKI;
+          const SoAFloatPrecision distYIJ = distYKJ - distYKI;
+          const SoAFloatPrecision distZIJ = distZKJ - distZKI;
+          const SoAFloatPrecision distSquaredIJ = distXIJ * distXIJ + distYIJ * distYIJ + distZIJ * distZIJ;
+                    const double mask = (distSquaredIJ <= cutoffSquared) ? 1.0 : 0.0;
+                    const double safeDistSquaredIJ = distSquaredIJ > 0.0 ? distSquaredIJ : 1.0;
+          const double invDistSquaredIJ = 1.0 / safeDistSquaredIJ;
+                    const SoAFloatPrecision distXJK = -distXKJ;
+          const SoAFloatPrecision distYJK = -distYKJ;
+          const SoAFloatPrecision distZJK = -distZKJ;
+                    const SoAFloatPrecision IJDotJK = distXIJ * distXJK + distYIJ * distYJK + distZIJ * distZJK;
+                    double nu = const_nu;
+                    const double allDistsSquared = safeDistSquaredIJ * distSquaredJK * distSquaredKI;
+          const double allDistsTo5 = allDistsSquared * allDistsSquared * std::sqrt(allDistsSquared);
+          const double factor = (nu / allDistsTo5) * mask;
+                    const double IJDotKI = -(safeDistSquaredIJ + IJDotJK);
+          const double JKDotKI = -(IJDotJK + distSquaredJK);
+          const double IJdotJKdotKI = IJDotJK * JKDotKI;
+          const double allDotProducts = IJDotKI * IJdotJKdotKI;
+                    const double T = allDistsSquared - 5.0 * allDotProducts;
+          const double termIJ = T * invDistSquaredIJ;
+          const double termKI = T / distSquaredKI;
+          const double termJK = T / distSquaredJK;
+                    const double factorIDirectionJK = IJDotKI * (IJDotJK - JKDotKI);
+                    const double finalFactorIJ = factor * (termIJ + termKI - 2.0 * IJdotJKdotKI);
+          const double finalFactorJK = factor * (factorIDirectionJK + IJdotJKdotKI - termKI);
+                    const double forceIX = distXJK * finalFactorJK - distXIJ * finalFactorIJ;
+          const double forceIY = distYJK * finalFactorJK - distYIJ * finalFactorIJ;
+          const double forceIZ = distZJK * finalFactorJK - distZIJ * finalFactorIJ;
+                    const double prodJK_KI = IJDotKI * JKDotKI;
+          const double factorJDirectionKI = IJDotJK * (JKDotKI - IJDotKI);
+                    const double finalFactorIJOnJ = finalFactorIJ + finalFactorJK;
+          const double finalFactorJKOnJ = factor * (prodJK_KI - termJK - factorJDirectionKI);
+                    const double forceJX = distXJK * finalFactorJKOnJ + distXIJ * finalFactorIJOnJ;
+          const double forceJY = distYJK * finalFactorJKOnJ + distYIJ * finalFactorIJOnJ;
+          const double forceJZ = distZJK * finalFactorJKOnJ + distZIJ * finalFactorIJOnJ;
+                    const double forceKX = -(forceIX + forceJX);
+          const double forceKY = -(forceIY + forceJY);
+          const double forceKZ = -(forceIZ + forceJZ);
+                    fXAccI += forceIX;
+          fYAccI += forceIY;
+          fZAccI += forceIZ;
+                    packedFx[j] += forceJX;
+          packedFy[j] += forceJY;
+          packedFz[j] += forceJZ;
+                    if constexpr (newton3) {
+          fXAccK += forceKX;
+          fYAccK += forceKY;
+          fZAccK += forceKZ;
+                    if constexpr (calculateGlobals) {
+          const double potentialEnergy3 = factor * (allDistsSquared - 3.0 * allDotProducts);
+          potentialEnergySum += potentialEnergy3 * (isOwnedI + isOwnedJ + isOwnedK);
+                    virialSumX += (forceIX * (-distXJK - 2.0 * distXIJ) * isOwnedI +
+          forceJX * (distXIJ - distXJK) * isOwnedJ +
+          forceKX * (2.0 * distXJK + distXIJ) * isOwnedK);
+          virialSumY += (forceIY * (-distYJK - 2.0 * distYIJ) * isOwnedI +
+          forceJY * (distYIJ - distYJK) * isOwnedJ +
+          forceKY * (2.0 * distYJK + distYIJ) * isOwnedK);
+          virialSumZ += (forceIZ * (-distZJK - 2.0 * distZIJ) * isOwnedI +
+          forceJZ * (distZIJ - distZJK) * isOwnedJ +
+          forceKZ * (2.0 * distZJK + distZIJ) * isOwnedK);
+          }
+          } else {
+          if constexpr (calculateGlobals) {
+          const double potentialEnergy3 = factor * (allDistsSquared - 3.0 * allDotProducts);
+          potentialEnergySum += potentialEnergy3 * (isOwnedI + isOwnedJ);
+                    virialSumX += (forceIX * (-distXJK - 2.0 * distXIJ) * isOwnedI +
+          forceJX * (distXIJ - distXJK) * isOwnedJ);
+          virialSumY += (forceIY * (-distYJK - 2.0 * distYIJ) * isOwnedI +
+          forceJY * (distYIJ - distYJK) * isOwnedJ);
+          virialSumZ += (forceIZ * (-distZJK - 2.0 * distZIJ) * isOwnedI +
+          forceJZ * (distZIJ - distZJK) * isOwnedJ);
+          }
+          }
+          }
+        }
+
+        packedFx[i] += fXAccI;
+        packedFy[i] += fYAccI;
+        packedFz[i] += fZAccI;
+      }
+
+      if constexpr (newton3) {
+        fxptr2[k] += fXAccK;
+        fyptr2[k] += fYAccK;
+        fzptr2[k] += fZAccK;
+      }
+
+      for (size_t n = 0; n < numNeighbors; ++n) {
+        const size_t origI = packedIndices[n];
+        fxptr1[origI] += packedFx[n];
+        fyptr1[origI] += packedFy[n];
+        fzptr1[origI] += packedFz[n];
+      }
     }
 
     if constexpr (countFLOPs) {
@@ -1144,7 +1302,7 @@ class AxilrodTellerMutoFunctor6
     }
   }
 
-  template <bool newton3>
+  template <bool newton3, bool useSIMD>
   void SoAFunctorTripleImpl(autopas::SoAView<SoAArraysType> soa1, autopas::SoAView<SoAArraysType> soa2,
                             autopas::SoAView<SoAArraysType> soa3) {
     const auto threadnum = autopas::autopas_get_thread_num();
@@ -1158,10 +1316,10 @@ class AxilrodTellerMutoFunctor6
     const auto *const __restrict xptr3 = soa3.template begin<Particle_T::AttributeNames::posX>();
     const auto *const __restrict yptr3 = soa3.template begin<Particle_T::AttributeNames::posY>();
     const auto *const __restrict zptr3 = soa3.template begin<Particle_T::AttributeNames::posZ>();
-
     const auto *const __restrict ownedStatePtr1 = soa1.template begin<Particle_T::AttributeNames::ownershipState>();
     const auto *const __restrict ownedStatePtr2 = soa2.template begin<Particle_T::AttributeNames::ownershipState>();
     const auto *const __restrict ownedStatePtr3 = soa3.template begin<Particle_T::AttributeNames::ownershipState>();
+
     const auto *const rawOwnedStatePtr1 = reinterpret_cast<const int64_t *>(ownedStatePtr1);
     const auto *const rawOwnedStatePtr2 = reinterpret_cast<const int64_t *>(ownedStatePtr2);
     const auto *const rawOwnedStatePtr3 = reinterpret_cast<const int64_t *>(ownedStatePtr3);
@@ -1177,7 +1335,6 @@ class AxilrodTellerMutoFunctor6
     auto *const __restrict fxptr3 = soa3.template begin<Particle_T::AttributeNames::forceX>();
     auto *const __restrict fyptr3 = soa3.template begin<Particle_T::AttributeNames::forceY>();
     auto *const __restrict fzptr3 = soa3.template begin<Particle_T::AttributeNames::forceZ>();
-
     [[maybe_unused]] auto *const __restrict typeptr1 = soa1.template begin<Particle_T::AttributeNames::typeId>();
     [[maybe_unused]] auto *const __restrict typeptr2 = soa2.template begin<Particle_T::AttributeNames::typeId>();
     [[maybe_unused]] auto *const __restrict typeptr3 = soa3.template begin<Particle_T::AttributeNames::typeId>();
@@ -1201,193 +1358,275 @@ class AxilrodTellerMutoFunctor6
     const auto soa1Size = soa1.size();
     const auto soa2Size = soa2.size();
     const auto soa3Size = soa3.size();
-
     if constexpr (countFLOPs) {
       numTripletsCountingSum = soa1Size * soa2Size * soa3Size;
     }
 
-    // Precompute j-k pairwise distances in look-up table
-    const size_t distArraySizeJK = soa2Size * soa3Size;
-    auto &buffers = detail6::getThreadLocalDistBuffers<SoAFloatPrecision>();
-    buffers.ensureCapacity(distArraySizeJK);
-    auto *const __restrict soaDistsX = buffers.distsX.data();
-    auto *const __restrict soaDistsY = buffers.distsY.data();
-    auto *const __restrict soaDistsZ = buffers.distsZ.data();
-    auto *const __restrict soaDistsR2 = buffers.distsR2.data();
-
+    // Inverted loop order: j -> k -> i with early cutoff pruning on (j, k)
     for (size_t j = 0; j < soa2Size; ++j) {
-      const size_t baseIndexJ = j * soa3Size;
+      const auto ownedStateJ = rawOwnedStatePtr2[j];
+      if (ownedStateJ == rawDummyState) {
+        continue;
+      }
+      const double isOwnedJ = (ownedStateJ == rawOwnedState) ? 1.0 : 0.0;
+
       const SoAFloatPrecision xj = xptr2[j];
       const SoAFloatPrecision yj = yptr2[j];
       const SoAFloatPrecision zj = zptr2[j];
-#pragma omp simd
+
+      SoAFloatPrecision fXAccJ = 0.;
+      SoAFloatPrecision fYAccJ = 0.;
+      SoAFloatPrecision fZAccJ = 0.;
+
       for (size_t k = 0; k < soa3Size; ++k) {
-        const SoAFloatPrecision distXJK = xptr3[k] - xj;
-        const SoAFloatPrecision distYJK = yptr3[k] - yj;
-        const SoAFloatPrecision distZJK = zptr3[k] - zj;
-        soaDistsX[baseIndexJ + k] = distXJK;
-        soaDistsY[baseIndexJ + k] = distYJK;
-        soaDistsZ[baseIndexJ + k] = distZJK;
-        soaDistsR2[baseIndexJ + k] = distXJK * distXJK + distYJK * distYJK + distZJK * distZJK;
-      }
-    }
-    if constexpr (countFLOPs) {
-      numDistanceCalculationSum += soa2Size * soa3Size;
-    }
-
-    // Traversal using look-up table and SIMD vectorization over k
-    for (size_t i = 0; i < soa1Size; ++i) {
-      const auto ownedStateI = rawOwnedStatePtr1[i];
-      if (ownedStateI == rawDummyState) {
-        continue;
-      }
-      const double isOwnedI = (ownedStateI == rawOwnedState) ? 1.0 : 0.0;
-
-      const SoAFloatPrecision xi = xptr1[i];
-      const SoAFloatPrecision yi = yptr1[i];
-      const SoAFloatPrecision zi = zptr1[i];
-
-      SoAFloatPrecision fXAccI = 0.;
-      SoAFloatPrecision fYAccI = 0.;
-      SoAFloatPrecision fZAccI = 0.;
-
-      for (size_t j = 0; j < soa2Size; ++j) {
-        const auto ownedStateJ = rawOwnedStatePtr2[j];
-        if (ownedStateJ == rawDummyState) {
+        const auto ownedStateK = rawOwnedStatePtr3[k];
+        if (ownedStateK == rawDummyState) {
           continue;
         }
-        const double isOwnedJ = (ownedStateJ == rawOwnedState) ? 1.0 : 0.0;
+        const double isOwnedK = (ownedStateK == rawOwnedState) ? 1.0 : 0.0;
 
-        const SoAFloatPrecision distXIJ = xptr2[j] - xi;
-        const SoAFloatPrecision distYIJ = yptr2[j] - yi;
-        const SoAFloatPrecision distZIJ = zptr2[j] - zi;
-        const SoAFloatPrecision distSquaredIJ = distXIJ * distXIJ + distYIJ * distYIJ + distZIJ * distZIJ;
+        const SoAFloatPrecision xk = xptr3[k];
+        const SoAFloatPrecision yk = yptr3[k];
+        const SoAFloatPrecision zk = zptr3[k];
+
+        const SoAFloatPrecision distXJK = xk - xj;
+        const SoAFloatPrecision distYJK = yk - yj;
+        const SoAFloatPrecision distZJK = zk - zj;
+        const SoAFloatPrecision distSquaredJK = distXJK * distXJK + distYJK * distYJK + distZJK * distZJK;
 
         if constexpr (countFLOPs) {
           ++numDistanceCalculationSum;
         }
-        if (distSquaredIJ > cutoffSquared) {
+        if (distSquaredJK > cutoffSquared) {
           continue;
         }
 
-        const double safeDistSquaredIJ = distSquaredIJ > 0.0 ? distSquaredIJ : 1.0;
-        const double invDistSquaredIJ = 1.0 / safeDistSquaredIJ;
+        SoAFloatPrecision fXAccK = 0.;
+        SoAFloatPrecision fYAccK = 0.;
+        SoAFloatPrecision fZAccK = 0.;
 
-        const size_t baseIndexJ = j * soa3Size;
+        if constexpr (useSIMD) {
+#pragma omp simd reduction(+: fXAccJ, fYAccJ, fZAccJ, fXAccK, fYAccK, fZAccK, potentialEnergySum, virialSumX, virialSumY, virialSumZ) simdlen(8)
+          for (size_t i = 0; i < soa1Size; ++i) {
+            const auto ownedStateI = rawOwnedStatePtr1[i];
+            const double isOwnedI = (ownedStateI == rawOwnedState) ? 1.0 : 0.0;
 
-        SoAFloatPrecision fXAccJ = 0.;
-        SoAFloatPrecision fYAccJ = 0.;
-        SoAFloatPrecision fZAccJ = 0.;
+            const SoAFloatPrecision xi = xptr1[i];
+            const SoAFloatPrecision yi = yptr1[i];
+            const SoAFloatPrecision zi = zptr1[i];
 
-#pragma omp simd reduction(+: fXAccI, fYAccI, fZAccI, fXAccJ, fYAccJ, fZAccJ, potentialEnergySum, virialSumX, virialSumY, virialSumZ) simdlen(8)
-        for (size_t k = 0; k < soa3Size; ++k) {
-          const auto ownedStateK = rawOwnedStatePtr3[k];
-          const double isOwnedK = (ownedStateK == rawOwnedState) ? 1.0 : 0.0;
+            const SoAFloatPrecision distXIJ = xj - xi;
+            const SoAFloatPrecision distYIJ = yj - yi;
+            const SoAFloatPrecision distZIJ = zj - zi;
+            const SoAFloatPrecision distSquaredIJ = distXIJ * distXIJ + distYIJ * distYIJ + distZIJ * distZIJ;
 
-          const SoAFloatPrecision distXJK = soaDistsX[baseIndexJ + k];
-          const SoAFloatPrecision distYJK = soaDistsY[baseIndexJ + k];
-          const SoAFloatPrecision distZJK = soaDistsZ[baseIndexJ + k];
-          const SoAFloatPrecision distSquaredJK = soaDistsR2[baseIndexJ + k];
+            const SoAFloatPrecision IJDotJK = distXIJ * distXJK + distYIJ * distYJK + distZIJ * distZJK;
+            const SoAFloatPrecision distSquaredKI = distSquaredIJ + distSquaredJK + 2.0 * IJDotJK;
 
-          const SoAFloatPrecision IJDotJK = distXIJ * distXJK + distYIJ * distYJK + distZIJ * distZJK;
-          const SoAFloatPrecision distSquaredKI = distSquaredIJ + distSquaredJK + 2.0 * IJDotJK;
+            const double mask = (ownedStateI != rawDummyState && distSquaredIJ <= cutoffSquared && distSquaredKI <= cutoffSquared) ? 1.0 : 0.0;
 
-          const double mask = (ownedStateK != rawDummyState && distSquaredJK <= cutoffSquared && distSquaredKI <= cutoffSquared) ? 1.0 : 0.0;
+            const double safeDistSquaredIJ = distSquaredIJ > 0.0 ? distSquaredIJ : 1.0;
+            const double safeDistSquaredKI = distSquaredKI > 0.0 ? distSquaredKI : 1.0;
+            const double invDistSquaredIJ = 1.0 / safeDistSquaredIJ;
 
-          const double safeDistSquaredJK = distSquaredJK > 0.0 ? distSquaredJK : 1.0;
-          const double safeDistSquaredKI = distSquaredKI > 0.0 ? distSquaredKI : 1.0;
+            double nu = const_nu;
 
-          double nu = const_nu;
-          // if constexpr (useMixing) {
-          //   nu = 3.0 * _PPLibrary->getMixingNu(typeptr1[i], typeptr2[j], typeptr3[k]);
-          // }
+            const double allDistsSquared = safeDistSquaredIJ * distSquaredJK * safeDistSquaredKI;
+            const double allDistsTo5 = allDistsSquared * allDistsSquared * std::sqrt(allDistsSquared);
+            const double factor = (nu / allDistsTo5) * mask;
 
-          const double allDistsSquared = safeDistSquaredIJ * safeDistSquaredJK * safeDistSquaredKI;
-          const double allDistsTo5 = allDistsSquared * allDistsSquared * std::sqrt(allDistsSquared);
-          const double factor = (nu / allDistsTo5) * mask;
+            const double IJDotKI = -(safeDistSquaredIJ + IJDotJK);
+            const double JKDotKI = -(IJDotJK + distSquaredJK);
+            const double IJdotJKdotKI = IJDotJK * JKDotKI;
+            const double allDotProducts = IJDotKI * IJdotJKdotKI;
 
-          const double IJDotKI = -(safeDistSquaredIJ + IJDotJK);
-          const double JKDotKI = -(IJDotJK + safeDistSquaredJK);
-          const double IJdotJKdotKI = IJDotJK * JKDotKI;
-          const double allDotProducts = IJDotKI * IJdotJKdotKI;
+            const double T = allDistsSquared - 5.0 * allDotProducts;
+            const double termIJ = T * invDistSquaredIJ;
+            const double termKI = T / safeDistSquaredKI;
 
-          const double T = allDistsSquared - 5.0 * allDotProducts;
-          const double termIJ = T * invDistSquaredIJ;
-          const double termKI = T / safeDistSquaredKI;
+            const double factorIDirectionJK = IJDotKI * (IJDotJK - JKDotKI);
 
-          const double factorIDirectionJK = IJDotKI * (IJDotJK - JKDotKI);
+            const double finalFactorIJ = factor * (termIJ + termKI - 2.0 * IJdotJKdotKI);
+            const double finalFactorJK = factor * (factorIDirectionJK + IJdotJKdotKI - termKI);
 
-          const double finalFactorIJ = factor * (termIJ + termKI - 2.0 * IJdotJKdotKI);
-          const double finalFactorJK = factor * (factorIDirectionJK + IJdotJKdotKI - termKI);
+            const double forceIX = distXJK * finalFactorJK - distXIJ * finalFactorIJ;
+            const double forceIY = distYJK * finalFactorJK - distYIJ * finalFactorIJ;
+            const double forceIZ = distZJK * finalFactorJK - distZIJ * finalFactorIJ;
 
-          const double forceIX = distXJK * finalFactorJK - distXIJ * finalFactorIJ;
-          const double forceIY = distYJK * finalFactorJK - distYIJ * finalFactorIJ;
-          const double forceIZ = distZJK * finalFactorJK - distZIJ * finalFactorIJ;
+            fxptr1[i] += forceIX;
+            fyptr1[i] += forceIY;
+            fzptr1[i] += forceIZ;
 
-          fXAccI += forceIX;
-          fYAccI += forceIY;
-          fZAccI += forceIZ;
+            if constexpr (newton3) {
+              const double termJK = T / distSquaredJK;
+              const double prodJK_KI = IJDotKI * JKDotKI;
+              const double factorJDirectionKI = IJDotJK * (JKDotKI - IJDotKI);
 
-          if constexpr (newton3) {
-            const double termJK = T / safeDistSquaredJK;
-            const double prodJK_KI = IJDotKI * JKDotKI;
-            const double factorJDirectionKI = IJDotJK * (JKDotKI - IJDotKI);
+              const double finalFactorIJOnJ = finalFactorIJ + finalFactorJK;
+              const double finalFactorJKOnJ = factor * (prodJK_KI - termJK - factorJDirectionKI);
 
-            const double finalFactorIJOnJ = finalFactorIJ + finalFactorJK;
-            const double finalFactorJKOnJ = factor * (prodJK_KI - termJK - factorJDirectionKI);
+              const double forceJX = distXJK * finalFactorJKOnJ + distXIJ * finalFactorIJOnJ;
+              const double forceJY = distYJK * finalFactorJKOnJ + distYIJ * finalFactorIJOnJ;
+              const double forceJZ = distZJK * finalFactorJKOnJ + distZIJ * finalFactorIJOnJ;
 
-            const double forceJX = distXJK * finalFactorJKOnJ + distXIJ * finalFactorIJOnJ;
-            const double forceJY = distYJK * finalFactorJKOnJ + distYIJ * finalFactorIJOnJ;
-            const double forceJZ = distZJK * finalFactorJKOnJ + distZIJ * finalFactorIJOnJ;
+              const double forceKX = -(forceIX + forceJX);
+              const double forceKY = -(forceIY + forceJY);
+              const double forceKZ = -(forceIZ + forceJZ);
 
-            const double forceKX = -(forceIX + forceJX);
-            const double forceKY = -(forceIY + forceJY);
-            const double forceKZ = -(forceIZ + forceJZ);
+              fXAccJ += forceJX;
+              fYAccJ += forceJY;
+              fZAccJ += forceJZ;
 
-            fXAccJ += forceJX;
-            fYAccJ += forceJY;
-            fZAccJ += forceJZ;
+              fXAccK += forceKX;
+              fYAccK += forceKY;
+              fZAccK += forceKZ;
 
-            fxptr3[k] += forceKX;
-            fyptr3[k] += forceKY;
-            fzptr3[k] += forceKZ;
+              if constexpr (calculateGlobals) {
+                const double potentialEnergy3 = factor * (allDistsSquared - 3.0 * allDotProducts);
+                potentialEnergySum += potentialEnergy3 * (isOwnedI + isOwnedJ + isOwnedK);
 
-            if constexpr (calculateGlobals) {
-              const double potentialEnergy3 = factor * (allDistsSquared - 3.0 * allDotProducts);
-              potentialEnergySum += potentialEnergy3 * (isOwnedI + isOwnedJ + isOwnedK);
+                virialSumX += (forceIX * (-distXJK - 2.0 * distXIJ) * isOwnedI +
+                               forceJX * (distXIJ - distXJK) * isOwnedJ +
+                               forceKX * (2.0 * distXJK + distXIJ) * isOwnedK);
+                virialSumY += (forceIY * (-distYJK - 2.0 * distYIJ) * isOwnedI +
+                               forceJY * (distYIJ - distYJK) * isOwnedJ +
+                               forceKY * (2.0 * distYJK + distYIJ) * isOwnedK);
+                virialSumZ += (forceIZ * (-distZJK - 2.0 * distZIJ) * isOwnedI +
+                               forceJZ * (distZIJ - distZJK) * isOwnedJ +
+                               forceKZ * (2.0 * distZJK + distZIJ) * isOwnedK);
+              }
+            } else {
+              if constexpr (calculateGlobals) {
+                const double potentialEnergy3 = factor * (allDistsSquared - 3.0 * allDotProducts);
+                potentialEnergySum += potentialEnergy3 * isOwnedI;
 
-              virialSumX += (forceIX * (-distXJK - 2.0 * distXIJ) * isOwnedI +
-                             forceJX * (distXIJ - distXJK) * isOwnedJ +
-                             forceKX * (2.0 * distXJK + distXIJ) * isOwnedK);
-              virialSumY += (forceIY * (-distYJK - 2.0 * distYIJ) * isOwnedI +
-                             forceJY * (distYIJ - distYJK) * isOwnedJ +
-                             forceKY * (2.0 * distYJK + distYIJ) * isOwnedK);
-              virialSumZ += (forceIZ * (-distZJK - 2.0 * distZIJ) * isOwnedI +
-                             forceJZ * (distZIJ - distZJK) * isOwnedJ +
-                             forceKZ * (2.0 * distZJK + distZIJ) * isOwnedK);
+                virialSumX += forceIX * (-distXJK - 2.0 * distXIJ) * isOwnedI;
+                virialSumY += forceIY * (-distYJK - 2.0 * distYIJ) * isOwnedI;
+                virialSumZ += forceIZ * (-distZJK - 2.0 * distZIJ) * isOwnedI;
+              }
             }
-          } else {
-            if constexpr (calculateGlobals) {
-              const double potentialEnergy3 = factor * (allDistsSquared - 3.0 * allDotProducts);
-              potentialEnergySum += potentialEnergy3 * isOwnedI;
+          }
+        } else {
+          // Scalar loop with early branch
+          for (size_t i = 0; i < soa1Size; ++i) {
+            const auto ownedStateI = rawOwnedStatePtr1[i];
+            if (ownedStateI == rawDummyState) {
+              continue;
+            }
+            const double isOwnedI = (ownedStateI == rawOwnedState) ? 1.0 : 0.0;
 
-              virialSumX += forceIX * (-distXJK - 2.0 * distXIJ) * isOwnedI;
-              virialSumY += forceIY * (-distYJK - 2.0 * distYIJ) * isOwnedI;
-              virialSumZ += forceIZ * (-distZJK - 2.0 * distZIJ) * isOwnedI;
+            const SoAFloatPrecision xi = xptr1[i];
+            const SoAFloatPrecision yi = yptr1[i];
+            const SoAFloatPrecision zi = zptr1[i];
+
+            const SoAFloatPrecision distXIJ = xj - xi;
+            const SoAFloatPrecision distYIJ = yj - yi;
+            const SoAFloatPrecision distZIJ = zj - zi;
+            const SoAFloatPrecision distSquaredIJ = distXIJ * distXIJ + distYIJ * distYIJ + distZIJ * distZIJ;
+
+            if (distSquaredIJ > cutoffSquared) {
+              continue;
+            }
+
+            const SoAFloatPrecision IJDotJK = distXIJ * distXJK + distYIJ * distYJK + distZIJ * distZJK;
+            const SoAFloatPrecision distSquaredKI = distSquaredIJ + distSquaredJK + 2.0 * IJDotJK;
+
+            if (distSquaredKI > cutoffSquared) {
+              continue;
+            }
+
+            const double invDistSquaredIJ = 1.0 / distSquaredIJ;
+            double nu = const_nu;
+
+            const double allDistsSquared = distSquaredIJ * distSquaredJK * distSquaredKI;
+            const double allDistsTo5 = allDistsSquared * allDistsSquared * std::sqrt(allDistsSquared);
+            const double factor = nu / allDistsTo5;
+
+            const double IJDotKI = -(distSquaredIJ + IJDotJK);
+            const double JKDotKI = -(IJDotJK + distSquaredJK);
+            const double IJdotJKdotKI = IJDotJK * JKDotKI;
+            const double allDotProducts = IJDotKI * IJdotJKdotKI;
+
+            const double T = allDistsSquared - 5.0 * allDotProducts;
+            const double termIJ = T * invDistSquaredIJ;
+            const double termKI = T / distSquaredKI;
+
+            const double factorIDirectionJK = IJDotKI * (IJDotJK - JKDotKI);
+
+            const double finalFactorIJ = factor * (termIJ + termKI - 2.0 * IJdotJKdotKI);
+            const double finalFactorJK = factor * (factorIDirectionJK + IJdotJKdotKI - termKI);
+
+            const double forceIX = distXJK * finalFactorJK - distXIJ * finalFactorIJ;
+            const double forceIY = distYJK * finalFactorJK - distYIJ * finalFactorIJ;
+            const double forceIZ = distZJK * finalFactorJK - distZIJ * finalFactorIJ;
+
+            fxptr1[i] += forceIX;
+            fyptr1[i] += forceIY;
+            fzptr1[i] += forceIZ;
+
+            if constexpr (newton3) {
+              const double termJK = T / distSquaredJK;
+              const double prodJK_KI = IJDotKI * JKDotKI;
+              const double factorJDirectionKI = IJDotJK * (JKDotKI - IJDotKI);
+
+              const double finalFactorIJOnJ = finalFactorIJ + finalFactorJK;
+              const double finalFactorJKOnJ = factor * (prodJK_KI - termJK - factorJDirectionKI);
+
+              const double forceJX = distXJK * finalFactorJKOnJ + distXIJ * finalFactorIJOnJ;
+              const double forceJY = distYJK * finalFactorJKOnJ + distYIJ * finalFactorIJOnJ;
+              const double forceJZ = distZJK * finalFactorJKOnJ + distZIJ * finalFactorIJOnJ;
+
+              const double forceKX = -(forceIX + forceJX);
+              const double forceKY = -(forceIY + forceJY);
+              const double forceKZ = -(forceIZ + forceJZ);
+
+              fXAccJ += forceJX;
+              fYAccJ += forceJY;
+              fZAccJ += forceJZ;
+
+              fXAccK += forceKX;
+              fYAccK += forceKY;
+              fZAccK += forceKZ;
+
+              if constexpr (calculateGlobals) {
+                const double potentialEnergy3 = factor * (allDistsSquared - 3.0 * allDotProducts);
+                potentialEnergySum += potentialEnergy3 * (isOwnedI + isOwnedJ + isOwnedK);
+
+                virialSumX += (forceIX * (-distXJK - 2.0 * distXIJ) * isOwnedI +
+                               forceJX * (distXIJ - distXJK) * isOwnedJ +
+                               forceKX * (2.0 * distXJK + distXIJ) * isOwnedK);
+                virialSumY += (forceIY * (-distYJK - 2.0 * distYIJ) * isOwnedI +
+                               forceJY * (distYIJ - distYJK) * isOwnedJ +
+                               forceKY * (2.0 * distYJK + distYIJ) * isOwnedK);
+                virialSumZ += (forceIZ * (-distZJK - 2.0 * distZIJ) * isOwnedI +
+                               forceJZ * (distZIJ - distZJK) * isOwnedJ +
+                               forceKZ * (2.0 * distZJK + distZIJ) * isOwnedK);
+              }
+            } else {
+              if constexpr (calculateGlobals) {
+                const double potentialEnergy3 = factor * (allDistsSquared - 3.0 * allDotProducts);
+                potentialEnergySum += potentialEnergy3 * isOwnedI;
+
+                virialSumX += forceIX * (-distXJK - 2.0 * distXIJ) * isOwnedI;
+                virialSumY += forceIY * (-distYJK - 2.0 * distYIJ) * isOwnedI;
+                virialSumZ += forceIZ * (-distZJK - 2.0 * distZIJ) * isOwnedI;
+              }
             }
           }
         }
 
         if constexpr (newton3) {
-          fxptr2[j] += fXAccJ;
-          fyptr2[j] += fYAccJ;
-          fzptr2[j] += fZAccJ;
+          fxptr3[k] += fXAccK;
+          fyptr3[k] += fYAccK;
+          fzptr3[k] += fZAccK;
         }
       }
 
-      fxptr1[i] += fXAccI;
-      fyptr1[i] += fYAccI;
-      fzptr1[i] += fZAccI;
+      if constexpr (newton3) {
+        fxptr2[j] += fXAccJ;
+        fyptr2[j] += fYAccJ;
+        fzptr2[j] += fZAccJ;
+      }
     }
 
     if constexpr (countFLOPs) {

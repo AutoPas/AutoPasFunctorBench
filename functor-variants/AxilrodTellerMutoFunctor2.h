@@ -455,7 +455,11 @@ class AxilrodTellerMutoFunctor2
   void SoAFunctorPair(autopas::SoAView<SoAArraysType> soa1, autopas::SoAView<SoAArraysType> soa2, bool newton3) final {
     if (soa1.size() == 0 || soa2.size() == 0) return;
 
-    return;
+    if (newton3) {
+      SoAFunctorPairImpl<true>(soa1, soa2);
+    } else {
+      SoAFunctorPairImpl<false>(soa1, soa2);
+    }
   }
 
   void SoAFunctorTriple(autopas::SoAView<SoAArraysType> soa1, autopas::SoAView<SoAArraysType> soa2,
@@ -747,7 +751,396 @@ class AxilrodTellerMutoFunctor2
     }
   }
 
-    template <bool newton3>
+  template <bool newton3>
+  void SoAFunctorPairImpl(autopas::SoAView<SoAArraysType> soa1, autopas::SoAView<SoAArraysType> soa2) {
+    const auto threadnum = autopas::autopas_get_thread_num();
+
+    const auto *const __restrict xptr1 = soa1.template begin<Particle_T::AttributeNames::posX>();
+    const auto *const __restrict yptr1 = soa1.template begin<Particle_T::AttributeNames::posY>();
+    const auto *const __restrict zptr1 = soa1.template begin<Particle_T::AttributeNames::posZ>();
+    const auto *const __restrict xptr2 = soa2.template begin<Particle_T::AttributeNames::posX>();
+    const auto *const __restrict yptr2 = soa2.template begin<Particle_T::AttributeNames::posY>();
+    const auto *const __restrict zptr2 = soa2.template begin<Particle_T::AttributeNames::posZ>();
+    const auto *const __restrict ownedStatePtr1 = soa1.template begin<Particle_T::AttributeNames::ownershipState>();
+    const auto *const __restrict ownedStatePtr2 = soa2.template begin<Particle_T::AttributeNames::ownershipState>();
+
+    auto *const __restrict fxptr1 = soa1.template begin<Particle_T::AttributeNames::forceX>();
+    auto *const __restrict fyptr1 = soa1.template begin<Particle_T::AttributeNames::forceY>();
+    auto *const __restrict fzptr1 = soa1.template begin<Particle_T::AttributeNames::forceZ>();
+    auto *const __restrict fxptr2 = soa2.template begin<Particle_T::AttributeNames::forceX>();
+    auto *const __restrict fyptr2 = soa2.template begin<Particle_T::AttributeNames::forceY>();
+    auto *const __restrict fzptr2 = soa2.template begin<Particle_T::AttributeNames::forceZ>();
+    [[maybe_unused]] auto *const __restrict typeptr1 = soa1.template begin<Particle_T::AttributeNames::typeId>();
+    [[maybe_unused]] auto *const __restrict typeptr2 = soa2.template begin<Particle_T::AttributeNames::typeId>();
+
+    const SoAFloatPrecision cutoffSquared = _cutoffSquared;
+
+    SoAFloatPrecision potentialEnergySum = 0.;
+    SoAFloatPrecision virialSumX = 0.;
+    SoAFloatPrecision virialSumY = 0.;
+    SoAFloatPrecision virialSumZ = 0.;
+
+    [[maybe_unused]] size_t numTripletsCountingSum = 0;
+    [[maybe_unused]] size_t numDistanceCalculationSum = 0;
+    [[maybe_unused]] size_t numKernelCallsN3Sum = 0;
+    [[maybe_unused]] size_t numKernelCallsNoN3Sum = 0;
+    [[maybe_unused]] size_t numGlobalCalcsN3Sum = 0;
+    [[maybe_unused]] size_t numGlobalCalcsNoN3Sum = 0;
+
+    const SoAFloatPrecision const_nu = _nu;
+
+    const size_t soa1Size = soa1.size();
+    const size_t soa2Size = soa2.size();
+    if constexpr (countFLOPs) {
+      numTripletsCountingSum = (soa1Size * soa2Size * (soa1Size + soa2Size - 2)) / 2;
+    }
+
+    // CASE 1: Particle i is in soa1, j and k are both in soa2
+    for (unsigned int i = 0; i < soa1Size; ++i) {
+      const auto ownedStateI = ownedStatePtr1[i];
+      if (ownedStateI == autopas::OwnershipState::dummy) {
+        continue;
+      }
+
+      SoAFloatPrecision fXAccI = 0.;
+      SoAFloatPrecision fYAccI = 0.;
+      SoAFloatPrecision fZAccI = 0.;
+
+      const SoAFloatPrecision xi = xptr1[i];
+      const SoAFloatPrecision yi = yptr1[i];
+      const SoAFloatPrecision zi = zptr1[i];
+
+      for (unsigned int j = 0; j < soa2Size; ++j) {
+        const auto ownedStateJ = ownedStatePtr2[j];
+        if (ownedStateJ == autopas::OwnershipState::dummy) {
+          continue;
+        }
+
+        const SoAFloatPrecision xj = xptr2[j];
+        const SoAFloatPrecision yj = yptr2[j];
+        const SoAFloatPrecision zj = zptr2[j];
+
+        const SoAFloatPrecision distXIJ = xj - xi;
+        const SoAFloatPrecision distYIJ = yj - yi;
+        const SoAFloatPrecision distZIJ = zj - zi;
+        const SoAFloatPrecision distSquaredIJ = distXIJ * distXIJ + distYIJ * distYIJ + distZIJ * distZIJ;
+
+        if constexpr (countFLOPs) {
+          ++numDistanceCalculationSum;
+        }
+        if (distSquaredIJ > cutoffSquared) {
+          continue;
+        }
+
+        const SoAFloatPrecision invDistSquaredIJ = 1.0 / distSquaredIJ;
+
+        SoAFloatPrecision fXAccJ = 0.;
+        SoAFloatPrecision fYAccJ = 0.;
+        SoAFloatPrecision fZAccJ = 0.;
+
+        for (unsigned int k = j + 1; k < soa2Size; ++k) {
+          const auto ownedStateK = ownedStatePtr2[k];
+          if (ownedStateK == autopas::OwnershipState::dummy) {
+            continue;
+          }
+
+          const SoAFloatPrecision xk = xptr2[k];
+          const SoAFloatPrecision yk = yptr2[k];
+          const SoAFloatPrecision zk = zptr2[k];
+
+          const SoAFloatPrecision distXJK = xk - xj;
+          const SoAFloatPrecision distYJK = yk - yj;
+          const SoAFloatPrecision distZJK = zk - zj;
+          const SoAFloatPrecision distSquaredJK = distXJK * distXJK + distYJK * distYJK + distZJK * distZJK;
+
+          if constexpr (countFLOPs) {
+            ++numDistanceCalculationSum;
+          }
+          if (distSquaredJK > cutoffSquared) {
+            continue;
+          }
+
+          const SoAFloatPrecision IJDotJK = distXIJ * distXJK + distYIJ * distYJK + distZIJ * distZJK;
+          const SoAFloatPrecision distSquaredKI = distSquaredIJ + distSquaredJK + 2.0 * IJDotJK;
+
+          if constexpr (countFLOPs) {
+            ++numDistanceCalculationSum;
+          }
+          if (distSquaredKI > cutoffSquared) {
+            continue;
+          }
+
+          SoAFloatPrecision nu = const_nu;
+          if constexpr (useMixing) {
+            nu = 3.0 * _PPLibrary->getMixingNu(typeptr1[i], typeptr2[j], typeptr2[k]);
+          }
+
+          SoAFloatPrecision forceIX = 0., forceIY = 0., forceIZ = 0.;
+          [[maybe_unused]] SoAFloatPrecision forceJX = 0., forceJY = 0., forceJZ = 0.;
+          [[maybe_unused]] SoAFloatPrecision forceKX = 0., forceKY = 0., forceKZ = 0.;
+          [[maybe_unused]] SoAFloatPrecision potentialEnergy3 = 0.;
+
+          SoAKernelMinFlops<newton3>(distXIJ, distYIJ, distZIJ, distXJK, distYJK, distZJK,
+                                    distSquaredIJ, distSquaredJK, distSquaredKI, invDistSquaredIJ,
+                                    IJDotJK, nu,
+                                    forceIX, forceIY, forceIZ, forceJX, forceJY, forceJZ,
+                                    forceKX, forceKY, forceKZ, potentialEnergy3);
+
+          fXAccI += forceIX;
+          fYAccI += forceIY;
+          fZAccI += forceIZ;
+
+          if constexpr (newton3) {
+            fXAccJ += forceJX;
+            fYAccJ += forceJY;
+            fZAccJ += forceJZ;
+
+            fxptr2[k] += forceKX;
+            fyptr2[k] += forceKY;
+            fzptr2[k] += forceKZ;
+
+            if constexpr (countFLOPs) {
+              ++numKernelCallsN3Sum;
+            }
+
+            if constexpr (calculateGlobals) {
+              if (ownedStateI == autopas::OwnershipState::owned) {
+                potentialEnergySum += potentialEnergy3;
+                virialSumX += forceIX * (-distXJK - 2.0 * distXIJ);
+                virialSumY += forceIY * (-distYJK - 2.0 * distYIJ);
+                virialSumZ += forceIZ * (-distZJK - 2.0 * distZIJ);
+              }
+              if (ownedStateJ == autopas::OwnershipState::owned) {
+                potentialEnergySum += potentialEnergy3;
+                virialSumX += forceJX * (distXIJ - distXJK);
+                virialSumY += forceJY * (distYIJ - distYJK);
+                virialSumZ += forceJZ * (distZIJ - distZJK);
+              }
+              if (ownedStateK == autopas::OwnershipState::owned) {
+                potentialEnergySum += potentialEnergy3;
+                virialSumX += forceKX * (2.0 * distXJK + distXIJ);
+                virialSumY += forceKY * (2.0 * distYJK + distYIJ);
+                virialSumZ += forceKZ * (2.0 * distZJK + distZIJ);
+              }
+              if constexpr (countFLOPs) {
+                ++numGlobalCalcsN3Sum;
+              }
+            }
+          } else {
+            if constexpr (countFLOPs) {
+              ++numKernelCallsNoN3Sum;
+            }
+            if constexpr (calculateGlobals) {
+              if (ownedStateI == autopas::OwnershipState::owned) {
+                potentialEnergySum += potentialEnergy3;
+                virialSumX += forceIX * (-distXJK - 2.0 * distXIJ);
+                virialSumY += forceIY * (-distYJK - 2.0 * distYIJ);
+                virialSumZ += forceIZ * (-distZJK - 2.0 * distZIJ);
+              }
+              if constexpr (countFLOPs) {
+                ++numGlobalCalcsNoN3Sum;
+              }
+            }
+          }
+        }
+
+        if constexpr (newton3) {
+          fxptr2[j] += fXAccJ;
+          fyptr2[j] += fYAccJ;
+          fzptr2[j] += fZAccJ;
+        }
+      }
+
+      fxptr1[i] += fXAccI;
+      fyptr1[i] += fYAccI;
+      fzptr1[i] += fZAccI;
+    }
+
+    // CASE 2: Particles i and j are both in soa1, k is in soa2
+    for (unsigned int i = 0; i < soa1Size; ++i) {
+      const auto ownedStateI = ownedStatePtr1[i];
+      if (ownedStateI == autopas::OwnershipState::dummy) {
+        continue;
+      }
+
+      const SoAFloatPrecision xi = xptr1[i];
+      const SoAFloatPrecision yi = yptr1[i];
+      const SoAFloatPrecision zi = zptr1[i];
+
+      SoAFloatPrecision fXAccI = 0.;
+      SoAFloatPrecision fYAccI = 0.;
+      SoAFloatPrecision fZAccI = 0.;
+
+      for (unsigned int j = i + 1; j < soa1Size; ++j) {
+        const auto ownedStateJ = ownedStatePtr1[j];
+        if (ownedStateJ == autopas::OwnershipState::dummy) {
+          continue;
+        }
+
+        const SoAFloatPrecision xj = xptr1[j];
+        const SoAFloatPrecision yj = yptr1[j];
+        const SoAFloatPrecision zj = zptr1[j];
+
+        const SoAFloatPrecision distXIJ = xj - xi;
+        const SoAFloatPrecision distYIJ = yj - yi;
+        const SoAFloatPrecision distZIJ = zj - zi;
+        const SoAFloatPrecision distSquaredIJ = distXIJ * distXIJ + distYIJ * distYIJ + distZIJ * distZIJ;
+
+        if constexpr (countFLOPs) {
+          ++numDistanceCalculationSum;
+        }
+        if (distSquaredIJ > cutoffSquared) {
+          continue;
+        }
+
+        const SoAFloatPrecision invDistSquaredIJ = 1.0 / distSquaredIJ;
+
+        SoAFloatPrecision fXAccJ = 0.;
+        SoAFloatPrecision fYAccJ = 0.;
+        SoAFloatPrecision fZAccJ = 0.;
+
+        for (unsigned int k = 0; k < soa2Size; ++k) {
+          const auto ownedStateK = ownedStatePtr2[k];
+          if (ownedStateK == autopas::OwnershipState::dummy) {
+            continue;
+          }
+
+          const SoAFloatPrecision xk = xptr2[k];
+          const SoAFloatPrecision yk = yptr2[k];
+          const SoAFloatPrecision zk = zptr2[k];
+
+          const SoAFloatPrecision distXJK = xk - xj;
+          const SoAFloatPrecision distYJK = yk - yj;
+          const SoAFloatPrecision distZJK = zk - zj;
+          const SoAFloatPrecision distSquaredJK = distXJK * distXJK + distYJK * distYJK + distZJK * distZJK;
+
+          if constexpr (countFLOPs) {
+            ++numDistanceCalculationSum;
+          }
+          if (distSquaredJK > cutoffSquared) {
+            continue;
+          }
+
+          const SoAFloatPrecision IJDotJK = distXIJ * distXJK + distYIJ * distYJK + distZIJ * distZJK;
+          const SoAFloatPrecision distSquaredKI = distSquaredIJ + distSquaredJK + 2.0 * IJDotJK;
+
+          if constexpr (countFLOPs) {
+            ++numDistanceCalculationSum;
+          }
+          if (distSquaredKI > cutoffSquared) {
+            continue;
+          }
+
+          SoAFloatPrecision nu = const_nu;
+          if constexpr (useMixing) {
+            nu = 3.0 * _PPLibrary->getMixingNu(typeptr1[i], typeptr1[j], typeptr2[k]);
+          }
+
+          SoAFloatPrecision forceIX = 0., forceIY = 0., forceIZ = 0.;
+          SoAFloatPrecision forceJX = 0., forceJY = 0., forceJZ = 0.;
+          [[maybe_unused]] SoAFloatPrecision forceKX = 0., forceKY = 0., forceKZ = 0.;
+          [[maybe_unused]] SoAFloatPrecision potentialEnergy3 = 0.;
+
+          // Even if newton3 is false, forces on j must be computed because j is in soa1
+          SoAKernelMinFlops<true>(distXIJ, distYIJ, distZIJ, distXJK, distYJK, distZJK,
+                                 distSquaredIJ, distSquaredJK, distSquaredKI, invDistSquaredIJ,
+                                 IJDotJK, nu,
+                                 forceIX, forceIY, forceIZ, forceJX, forceJY, forceJZ,
+                                 forceKX, forceKY, forceKZ, potentialEnergy3);
+
+          fXAccI += forceIX;
+          fYAccI += forceIY;
+          fZAccI += forceIZ;
+
+          fXAccJ += forceJX;
+          fYAccJ += forceJY;
+          fZAccJ += forceJZ;
+
+          if constexpr (newton3) {
+            fxptr2[k] += forceKX;
+            fyptr2[k] += forceKY;
+            fzptr2[k] += forceKZ;
+
+            if constexpr (countFLOPs) {
+              ++numKernelCallsN3Sum;
+            }
+
+            if constexpr (calculateGlobals) {
+              if (ownedStateI == autopas::OwnershipState::owned) {
+                potentialEnergySum += potentialEnergy3;
+                virialSumX += forceIX * (-distXJK - 2.0 * distXIJ);
+                virialSumY += forceIY * (-distYJK - 2.0 * distYIJ);
+                virialSumZ += forceIZ * (-distZJK - 2.0 * distZIJ);
+              }
+              if (ownedStateJ == autopas::OwnershipState::owned) {
+                potentialEnergySum += potentialEnergy3;
+                virialSumX += forceJX * (distXIJ - distXJK);
+                virialSumY += forceJY * (distYIJ - distYJK);
+                virialSumZ += forceJZ * (distZIJ - distZJK);
+              }
+              if (ownedStateK == autopas::OwnershipState::owned) {
+                potentialEnergySum += potentialEnergy3;
+                virialSumX += forceKX * (2.0 * distXJK + distXIJ);
+                virialSumY += forceKY * (2.0 * distYJK + distYIJ);
+                virialSumZ += forceKZ * (2.0 * distZJK + distZIJ);
+              }
+              if constexpr (countFLOPs) {
+                ++numGlobalCalcsN3Sum;
+              }
+            }
+          } else {
+            if constexpr (countFLOPs) {
+              ++numKernelCallsNoN3Sum;
+            }
+            if (ownedStateI == autopas::OwnershipState::owned) {
+              potentialEnergySum += potentialEnergy3;
+              virialSumX += forceIX * (-distXJK - 2.0 * distXIJ);
+              virialSumY += forceIY * (-distYJK - 2.0 * distYIJ);
+              virialSumZ += forceIZ * (-distZJK - 2.0 * distZIJ);
+            }
+            if (ownedStateJ == autopas::OwnershipState::owned) {
+              potentialEnergySum += potentialEnergy3;
+              virialSumX += forceJX * (distXIJ - distXJK);
+              virialSumY += forceJY * (distYIJ - distYJK);
+              virialSumZ += forceJZ * (distZIJ - distZJK);
+            }
+            if constexpr (countFLOPs) {
+              if constexpr (newton3) {
+                ++numGlobalCalcsN3Sum;
+              } else {
+                ++numGlobalCalcsNoN3Sum;
+              }
+            }
+          }
+        }
+
+        fxptr1[j] += fXAccJ;
+        fyptr1[j] += fYAccJ;
+        fzptr1[j] += fZAccJ;
+      }
+
+      fxptr1[i] += fXAccI;
+      fyptr1[i] += fYAccI;
+      fzptr1[i] += fZAccI;
+    }
+
+    if constexpr (countFLOPs) {
+      _aosThreadDataFLOPs[threadnum].numTripletsCount += numTripletsCountingSum;
+      _aosThreadDataFLOPs[threadnum].numDistCalls += numDistanceCalculationSum;
+      _aosThreadDataFLOPs[threadnum].numKernelCallsNoN3 += numKernelCallsNoN3Sum;
+      _aosThreadDataFLOPs[threadnum].numKernelCallsN3 += numKernelCallsN3Sum;
+      _aosThreadDataFLOPs[threadnum].numGlobalCalcsNoN3 += numGlobalCalcsNoN3Sum;
+      _aosThreadDataFLOPs[threadnum].numGlobalCalcsN3 += numGlobalCalcsN3Sum;
+    }
+    if constexpr (calculateGlobals) {
+      _aosThreadDataGlobals[threadnum].potentialEnergySum += potentialEnergySum;
+      _aosThreadDataGlobals[threadnum].virialSum[0] += virialSumX;
+      _aosThreadDataGlobals[threadnum].virialSum[1] += virialSumY;
+      _aosThreadDataGlobals[threadnum].virialSum[2] += virialSumZ;
+    }
+  }
+
+  template <bool newton3>
   void SoAFunctorTripleImpl(autopas::SoAView<SoAArraysType> soa1, autopas::SoAView<SoAArraysType> soa2,
                             autopas::SoAView<SoAArraysType> soa3) {
     const auto threadnum = autopas::autopas_get_thread_num();
