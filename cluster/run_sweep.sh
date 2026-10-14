@@ -46,12 +46,12 @@ fi
 # Defaults
 FUNCTORS="all"
 KERNELS="SoASingle,SoAPair,SoATriple,AoS"
-PARTICLES="16,32,64,128,256"
+PARTICLES="1,2,4,8,16,32,64,128,256,512"
 NEWTON3="both"
 GLOBALS="both"
 POOL_SIZE="1000"
-REPETITIONS="1"
-MIN_TIME="0.2s"
+REPETITIONS="5"
+MIN_TIME="0.5s"
 QUICK=false
 BASELINE=""
 
@@ -81,6 +81,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         -p|--particles)
             PARTICLES="$2"
+            shift 2
+            ;;
+        -r|--repetitions)
+            REPETITIONS="$2"
+            shift 2
+            ;;
+        -m|--min-time)
+            MIN_TIME="$2"
             shift 2
             ;;
         --n3)
@@ -155,12 +163,18 @@ echo "Min Time:   ${MIN_TIME}"
 echo "Output:     ${OUT_DIR}"
 echo "=========================================="
 
-# OpenMP single-thread affinity
+# OpenMP single-thread affinity & pinning
 export OMP_NUM_THREADS=1
 export OMP_PLACES=cores
-export OMP_PROC_BIND=spread
+export OMP_PROC_BIND=close
+export OMP_DISPLAY_AFFINITY=TRUE
 
-"${BIN}" \
+CMD_PREFIX=()
+if command -v taskset &>/dev/null; then
+    CMD_PREFIX=(taskset -c 0)
+fi
+
+"${CMD_PREFIX[@]}" "${BIN}" \
     -v \
     -f "${FUNCTORS}" \
     -k "${KERNELS}" \
@@ -169,7 +183,7 @@ export OMP_PROC_BIND=spread
     --n3 "${NEWTON3}" \
     --globals "${GLOBALS}" \
     --benchmark_repetitions="${REPETITIONS}" \
-    --benchmark_report_aggregates_only=true \
+    --benchmark_display_aggregates_only=true \
     --benchmark_min_time="${MIN_TIME}" \
     --benchmark_out="${JSON_FILE}" \
     --benchmark_out_format=json \

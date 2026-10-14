@@ -271,7 +271,7 @@ class AxilrodTellerMutoFunctor4
     // Calculate prefactor
     const double allDistsSquared = distSquaredIJ * distSquaredJK * distSquaredKI;
     const double allDistsTo5 = allDistsSquared * allDistsSquared * std::sqrt(allDistsSquared);
-    const double factor = 3.0 * nu / allDistsTo5;
+    const double factor = nu / allDistsTo5;
 
     // Dot products of both distance vectors going from one particle
     const double IJDotKI = autopas::utils::ArrayMath::dot(displacementIJ, displacementKI);

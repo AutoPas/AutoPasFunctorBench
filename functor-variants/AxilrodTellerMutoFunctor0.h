@@ -519,7 +519,7 @@ class AxilrodTellerMutoFunctor0
       _potentialEnergySum /= 3.;
 
       // Additionally, we have always calculated 3*potentialEnergy, so we divide by 3 again.
-      // _potentialEnergySum /= 3.;
+      _potentialEnergySum /= 3.;
       _virialSum *= (1. / 3.);
 
       _postProcessed = true;
@@ -714,7 +714,7 @@ class AxilrodTellerMutoFunctor0
     forceIZ = -(forceJZ + forceKZ);
 
     if constexpr (calculateGlobals) {
-      potentialEnergy3 = allDistsTo5Inv * (allDistsSquared - 0.6 * allDots5);
+      potentialEnergy3 = 3.0 * allDistsTo5Inv * (allDistsSquared - 0.6 * allDots5);
     }
   }
 
