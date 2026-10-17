@@ -150,6 +150,8 @@ def load_benchmark_json(file_path: str, label_override: Optional[str] = None) ->
             "TimeUnit": b.get("time_unit", "ns"),
             "TripletsPerSec": b.get("Triplets/s", np.nan),
             "TimePerTriplet_s": b.get("Time/Triplet", np.nan),
+            "PairsPerSec": b.get("Pairs/s", np.nan),
+            "TimePerPair_s": b.get("Time/Pair", np.nan),
             "TimePerInteraction_s": b.get("Time/Interaction", np.nan),
             "HitRate_pct": b.get("Hit%", np.nan),
             "Branch": branch,
@@ -157,11 +159,16 @@ def load_benchmark_json(file_path: str, label_override: Optional[str] = None) ->
             "SourceFile": path.name,
         }
 
-        # Convert Time per Triplet to picoseconds for intuitive reading
+        # Convert Time per Triplet / Pair to picoseconds for intuitive reading
         if not np.isnan(row["TimePerTriplet_s"]):
             row["TimePerTriplet_ps"] = row["TimePerTriplet_s"] * 1e12
         else:
             row["TimePerTriplet_ps"] = np.nan
+
+        if not np.isnan(row["TimePerPair_s"]):
+            row["TimePerPair_ps"] = row["TimePerPair_s"] * 1e12
+        else:
+            row["TimePerPair_ps"] = np.nan
 
         rows.append(row)
 
@@ -234,6 +241,8 @@ def load_dataset(args: argparse.Namespace) -> Tuple[pd.DataFrame, str]:
             raw_df = raw_df[raw_df["Functor"] == target_functor].copy()
         elif "ATM" in raw_df["Functor"].values:
             raw_df = raw_df[raw_df["Functor"] == "ATM"].copy()
+        elif "LJ" in raw_df["Functor"].values:
+            raw_df = raw_df[raw_df["Functor"] == "LJ"].copy()
         raw_df["Functor"] = name
         baseline_functor = name
         dfs.append(raw_df)
@@ -252,6 +261,8 @@ def load_dataset(args: argparse.Namespace) -> Tuple[pd.DataFrame, str]:
                 raw_df = raw_df[raw_df["Functor"] == target_functor].copy()
             elif "ATM2" in raw_df["Functor"].values:
                 raw_df = raw_df[raw_df["Functor"] == "ATM2"].copy()
+            elif "LJAVX" in raw_df["Functor"].values:
+                raw_df = raw_df[raw_df["Functor"] == "LJAVX"].copy()
             raw_df["Functor"] = name
             dfs.append(raw_df)
 
@@ -269,9 +280,15 @@ def load_dataset(args: argparse.Namespace) -> Tuple[pd.DataFrame, str]:
                 baseline_functor = f
                 break
         else:
-            print(f"[WARNING] Baseline '{baseline_functor}' not found in functors: {all_functors}. "
-                  f"Using '{all_functors[0]}' as baseline.")
-            baseline_functor = all_functors[0]
+            # Check common default baselines (LJ, LJGlobals, ATMGlobals) before falling back to first
+            for fallback in ["LJ", "ATMGlobals", "LJGlobals"]:
+                if fallback in all_functors:
+                    baseline_functor = fallback
+                    break
+            else:
+                baseline_functor = all_functors[0]
+            print(f"[WARNING] Baseline not found in functors: {all_functors}. "
+                  f"Using '{baseline_functor}' as baseline.")
 
     return df, baseline_functor
 
@@ -413,18 +430,32 @@ def plot_throughput_scaling(
     close_fig: bool = False,
 ):
     """
-    Plots throughput (GigaTriplets/sec) vs. Particle Count per Cell on a log-x scale.
+    Plots throughput (GigaPairs/sec or GigaTriplets/sec) vs. Particle Count per Cell on a log-x scale.
     """
     fig, ax = plt.subplots(figsize=(8, 5))
 
     plot_df = df.copy()
-    plot_df["GTripletsPerSec"] = plot_df["TripletsPerSec"] / 1e9
+    has_triplets = "TripletsPerSec" in plot_df.columns and plot_df["TripletsPerSec"].notna().any()
+    has_pairs = "PairsPerSec" in plot_df.columns and plot_df["PairsPerSec"].notna().any()
+
+    if has_pairs and not has_triplets:
+        plot_df["GThroughputPerSec"] = plot_df["PairsPerSec"] / 1e9
+        ylabel = "Throughput (GigaPairs / s)"
+    elif has_triplets and not has_pairs:
+        plot_df["GThroughputPerSec"] = plot_df["TripletsPerSec"] / 1e9
+        ylabel = "Throughput (GigaTriplets / s)"
+    else:
+        triplets_col = plot_df["TripletsPerSec"] if "TripletsPerSec" in plot_df.columns else pd.Series(np.nan, index=plot_df.index)
+        pairs_col = plot_df["PairsPerSec"] if "PairsPerSec" in plot_df.columns else pd.Series(np.nan, index=plot_df.index)
+        plot_df["GThroughputPerSec"] = triplets_col.fillna(pairs_col) / 1e9
+        ylabel = "Throughput (GigaPairs or GigaTriplets / s)"
+
     plot_df["Variant"] = plot_df["Functor"] + " (" + plot_df["Kernel"] + ", N3 " + plot_df["Newton3"] + ")"
 
     sns.lineplot(
         data=plot_df,
         x="Particles",
-        y="GTripletsPerSec",
+        y="GThroughputPerSec",
         hue="Variant",
         style="Variant",
         markers=True,
@@ -436,7 +467,7 @@ def plot_throughput_scaling(
 
     ax.set_xscale("log", base=2)
     ax.set_xlabel("Particles per Cell (Log Scale)")
-    ax.set_ylabel("Throughput (GigaTriplets / s)")
+    ax.set_ylabel(ylabel)
     ax.set_title("Functor Throughput Scaling", fontweight="bold")
     ax.grid(True, which="both", linestyle=":", alpha=0.6)
     ax.legend(title=None, bbox_to_anchor=(1.05, 1), loc="upper left")
@@ -456,10 +487,30 @@ def plot_time_per_triplet(
     close_fig: bool = False,
 ):
     """
-    Plots Time per Triplet (in picoseconds) vs. Particle Count.
+    Plots Time per Triplet or Pair (in picoseconds) vs. Particle Count.
     Lower is better.
     """
-    valid_df = df.dropna(subset=["TimePerTriplet_ps"]).copy()
+    plot_df = df.copy()
+    has_triplets = "TimePerTriplet_ps" in plot_df.columns and plot_df["TimePerTriplet_ps"].notna().any()
+    has_pairs = "TimePerPair_ps" in plot_df.columns and plot_df["TimePerPair_ps"].notna().any()
+
+    if has_pairs and not has_triplets:
+        y_col = "TimePerPair_ps"
+        ylabel = "Time per Pair (ps, Lower is Better)"
+        title = "Time per Pair vs. Particle Count"
+    elif has_triplets and not has_pairs:
+        y_col = "TimePerTriplet_ps"
+        ylabel = "Time per Triplet (ps, Lower is Better)"
+        title = "Time per Triplet vs. Particle Count"
+    else:
+        triplets_col = plot_df["TimePerTriplet_ps"] if "TimePerTriplet_ps" in plot_df.columns else pd.Series(np.nan, index=plot_df.index)
+        pairs_col = plot_df["TimePerPair_ps"] if "TimePerPair_ps" in plot_df.columns else pd.Series(np.nan, index=plot_df.index)
+        plot_df["TimePerTuple_ps"] = triplets_col.fillna(pairs_col)
+        y_col = "TimePerTuple_ps"
+        ylabel = "Time per Pair/Triplet (ps, Lower is Better)"
+        title = "Time per Pair/Triplet vs. Particle Count"
+
+    valid_df = plot_df.dropna(subset=[y_col]).copy()
     if valid_df.empty:
         return None, None
 
@@ -469,7 +520,7 @@ def plot_time_per_triplet(
     sns.lineplot(
         data=valid_df,
         x="Particles",
-        y="TimePerTriplet_ps",
+        y=y_col,
         hue="Variant",
         style="Variant",
         markers=True,
@@ -480,15 +531,15 @@ def plot_time_per_triplet(
     )
 
     ax.set_xlabel("Particles per Cell")
-    ax.set_ylabel("Time per Triplet (ps, Lower is Better)")
-    ax.set_title("Time per Triplet vs. Particle Count", fontweight="bold")
+    ax.set_ylabel(ylabel)
+    ax.set_title(title, fontweight="bold")
     ax.grid(True, which="both", linestyle=":", alpha=0.6)
     ax.legend(title=None, bbox_to_anchor=(1.05, 1), loc="upper left")
 
     plt.tight_layout()
     if output_path is not None:
         fig.savefig(output_path, dpi=300, bbox_inches="tight")
-        print(f"[SAVED] Time per triplet plot: {output_path}")
+        print(f"[SAVED] Time per pair/triplet plot: {output_path}")
     if close_fig:
         plt.close(fig)
     return fig, ax
@@ -507,7 +558,7 @@ def main():
     parser.add_argument(
         "--baseline",
         default="ATM",
-        help="Name of the baseline functor (default: 'ATM'). Everything will be normalized against this functor.",
+        help="Name of the baseline functor (default: 'ATM' or 'LJ'). Everything will be normalized against this functor.",
     )
     parser.add_argument(
         "--baseline-file",

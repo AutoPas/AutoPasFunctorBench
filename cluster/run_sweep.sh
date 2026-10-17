@@ -124,11 +124,18 @@ done
 
 if [ -z "${BASELINE}" ]; then
     FIRST_FUNCTOR=$(echo "${FUNCTORS}" | cut -d',' -f1)
-    if [ "${FIRST_FUNCTOR}" = "all" ]; then
+    FIRST_LOWER=$(echo "${FIRST_FUNCTOR}" | tr '[:upper:]' '[:lower:]')
+    if [ "${FIRST_LOWER}" = "all" ] || [ "${FIRST_LOWER}" = "triplets" ] || [ "${FIRST_LOWER}" = "3b" ] || [ "${FIRST_LOWER}" = "triwise" ] || [ "${FIRST_LOWER}" = "3-body" ]; then
         if [ "${GLOBALS}" = "on" ]; then
             BASELINE="ATMGlobals"
         else
             BASELINE="ATM"
+        fi
+    elif [ "${FIRST_LOWER}" = "pairs" ] || [ "${FIRST_LOWER}" = "2b" ] || [ "${FIRST_LOWER}" = "pairwise" ] || [ "${FIRST_LOWER}" = "2-body" ]; then
+        if [ "${GLOBALS}" = "on" ]; then
+            BASELINE="LJGlobals"
+        else
+            BASELINE="LJ"
         fi
     else
         if [ "${GLOBALS}" = "on" ] && [[ "${FIRST_FUNCTOR}" != *Globals* ]]; then

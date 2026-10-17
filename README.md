@@ -1,6 +1,6 @@
 # AutoPas Functor Bench
 
-A standalone benchmarking and verification harness for evaluating and optimizing AutoPas interaction functors (such as the 3-body Axilrod-Teller-Muto potential).
+A standalone benchmarking and verification harness for evaluating and optimizing AutoPas interaction functors, supporting both **pairwise (2-body)** functors (such as Lennard-Jones `LJ`, `LJAVX`) and **triwise (3-body)** functors (such as the Axilrod-Teller-Muto potential `ATM`, `ATM0`–`ATM6`).
 
 It allows side-by-side performance benchmarking and numerical correctness verification between a **Baseline** functor and one or more **Candidate** functor implementations across data layouts (AoS, SoA) and cell stencils.
 
@@ -8,11 +8,12 @@ It allows side-by-side performance benchmarking and numerical correctness verifi
 
 ## Features
 
+- **Pairwise & 3-Body Functor Support**: Benchmark and verify 2-body (`LJ`, `LJAVX`) and 3-body (`ATM`, `ATM0`–`ATM6`) functors with or without global energy/virial calculations.
 - **Side-by-Side Functor Comparison**: Benchmark baseline and candidate functors in the same binary under identical cache and hardware conditions.
-- **In-Memory Correctness Verification**: Check numerical agreement between baseline and candidate functors before or without benchmarking (`--verify`, `--verify-only`).
-- **Flexible Execution Kernels**: Target specific kernels (`AoS`, `SoASingle`, `SoAPair`, `SoATriple`, or `all`).
+- **In-Memory Correctness Verification**: Check numerical agreement between baseline and candidate functors grouped by arity (`LJ` baseline for 2-body, `ATM` baseline for 3-body) before or without benchmarking (`--verify`, `--verify-only`).
+- **Flexible Execution Kernels**: Target specific kernels (`AoS`, `SoASingle`, `SoAPair`, `SoATriple`, or `all`). Pairwise functors automatically run on `AoS`, `SoASingle`, and `SoAPair`.
 - **Newton-3 Comparison in One Run**: Compare Newton-3 enabled vs. disabled side-by-side (`--n3 both`, `--n3 on`, `--n3 off`).
-- **High-Resolution Throughput Metrics**: Reports interaction rate (`Interactions/s`), triplet evaluation rate (`Triplets/s`), time per triplet, and hit rates using Google Benchmark counters.
+- **High-Resolution Throughput Metrics**: Reports interaction rate (`Time/Interaction`), pair/triplet evaluation rate (`Pairs/s` or `Triplets/s`), time per pair/triplet, and hit rates using Google Benchmark counters.
 - **Configurable Benchmarking Ergonomics**: Support for explicit particle counts (`-p 8,16,32`), cell pool sizing (`--pool-size`), and deterministic seeding (`--seed`).
 
 ---
@@ -53,7 +54,7 @@ cmake --build build --target AP_Functor_Bench -j$(nproc)
 
 | Flag | Description | Default |
 |---|---|---|
-| `-f, --functor` | Comma-separated list of functors to test (`ATM`, `ATM2`, `ATMGlobals`, `all`) | `all` |
+| `-f, --functor` | Comma-separated list of functors or group aliases (`LJ`, `LJAVX`, `ATM`, `ATM2`, `pairs`/`2b`, `triplets`/`3b`, `all`) | `all` |
 | `-k, --kernel` | Comma-separated list of kernels (`AoS`, `SoASingle`, `SoAPair`, `SoATriple`, `all`) | `all` |
 | `-p, --particles` | Explicit comma-separated list of particle counts (e.g. `-p 16,32,64`) | *(none)* |
 | `--min`, `--max` | Particle range per cell when `-p` is not set (powers of 2) | `1`, `512` |
@@ -68,8 +69,8 @@ cmake --build build --target AP_Functor_Bench -j$(nproc)
 | `-s, --seed` | Random seed for particle generation | `42` |
 | `-v, --verify` | Verify numerical correctness against baseline before benchmarking | `false` |
 | `--verify-only` | Run correctness verification and exit immediately | `false` |
-| `--verify-baseline` | Functor to treat as baseline in verification | first from `-f` or `ATM` |
-| `--verify-candidate` | Functor to treat as candidate in verification | second from `-f` or `ATM2` |
+| `--verify-baseline` | Functor to treat as baseline in verification | `LJ` (2-body) / `ATM` (3-body) |
+| `--verify-candidate` | Functor to treat as candidate in verification | all active candidates |
 | `--verify-particles` | Number of particles per cell used in verification | `16` |
 | `--verify-tol` | Maximum absolute force tolerance for verification pass | `1e-10` |
 
@@ -80,17 +81,22 @@ cmake --build build --target AP_Functor_Bench -j$(nproc)
 ## Examples
 
 ### 1. Correctness Verification Only
-Verify that candidate `ATM2` matches baseline `ATM` across all kernels:
+Verify all pairwise (`LJ` vs `LJAVX`) and 3-body (`ATM` vs `ATM0`–`ATM6`) functors across all applicable kernels:
 ```bash
 ./build/AP_Functor_Bench --verify-only
 ```
-Or verify a specific kernel:
+Or verify only pairwise functors (or only 3-body functors):
 ```bash
-./build/AP_Functor_Bench --verify-only -k SoATriple
+./build/AP_Functor_Bench --verify-only -f pairs
+./build/AP_Functor_Bench --verify-only -f triplets -k SoATriple
 ```
 
 ### 2. Side-by-Side Functor Comparison
-Verify and compare `ATM` and `ATM2` side-by-side with Newton-3 both ON and OFF:
+Verify and compare pairwise `LJ` and `LJAVX` side-by-side with Newton-3 both ON and OFF:
+```bash
+./build/AP_Functor_Bench -v -f LJ,LJAVX -k SoAPair -p 16,32,64 --n3 both
+```
+Verify and compare 3-body `ATM` and `ATM2` side-by-side:
 ```bash
 ./build/AP_Functor_Bench -v -f ATM,ATM2 -k SoATriple -p 16,32 --n3 both
 ```
@@ -98,7 +104,7 @@ Verify and compare `ATM` and `ATM2` side-by-side with Newton-3 both ON and OFF:
 ### 3. Fast Local Development Run
 Use a small cell pool and short benchmark duration for instant iteration during kernel optimization:
 ```bash
-./build/AP_Functor_Bench -k SoATriple -f ATM2 -p 16 --pool-size 10 --benchmark_min_time=0.01s
+./build/AP_Functor_Bench -k SoAPair -f pairs -p 16 --pool-size 10 --benchmark_min_time=0.01s
 ```
 
 ---

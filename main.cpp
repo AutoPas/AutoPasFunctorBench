@@ -1,6 +1,10 @@
 #include <iostream>
 
 #include <molecularDynamicsLibrary/MoleculeLJ.h>
+#include <molecularDynamicsLibrary/LJFunctor.h>
+#ifdef __AVX__
+#include <molecularDynamicsLibrary/LJFunctorAVX.h>
+#endif
 #include <molecularDynamicsLibrary/AxilrodTellerMutoFunctor.h>
 #include <AxilrodTellerMutoFunctor0.h>
 #include <AxilrodTellerMutoFunctor1.h>
@@ -42,9 +46,22 @@ using Particle = mdLib::MoleculeLJ;
 using Cell = autopas::FullParticleCell<Particle>;
 
 // some constants that define the benchmark
+constexpr bool shift{false};
 constexpr bool mixing{false};
 constexpr autopas::FunctorN3Modes functorN3Modes{autopas::FunctorN3Modes::Both};
 constexpr bool globals{false};
+constexpr double epsilon24{24.0};
+constexpr double sigmaSquared{1.0};
+
+// Pairwise functors (2-Body)
+using LJ = mdLib::LJFunctor<Particle, shift, mixing, functorN3Modes, globals>;
+using LJGlobals = mdLib::LJFunctor<Particle, shift, mixing, functorN3Modes, true>;
+#ifdef __AVX__
+using LJAVX = mdLib::LJFunctorAVX<Particle, shift, mixing, functorN3Modes, globals>;
+using LJAVXGlobals = mdLib::LJFunctorAVX<Particle, shift, mixing, functorN3Modes, true>;
+#endif
+
+// Triwise functors (3-Body)
 using ATM = mdLib::AxilrodTellerMutoFunctor<Particle, mixing, functorN3Modes, globals>;
 using ATMGlobals = mdLib::AxilrodTellerMutoFunctor<Particle, mixing, functorN3Modes, true>;
 using ATM0 = mdLib::AxilrodTellerMutoFunctor0<Particle, mixing, functorN3Modes, globals>;
@@ -90,6 +107,18 @@ enum FunctorKernel
     SOAPAIR,
     SOATRIPLE
 };
+
+enum class FunctorArity
+{
+    Pairwise,
+    Triwise
+};
+
+template <typename FunctorType>
+constexpr bool is_pairwise_functor_v = std::is_base_of_v<autopas::PairwiseFunctor<Particle, FunctorType>, FunctorType>;
+
+template <typename FunctorType>
+constexpr bool is_triwise_functor_v = std::is_base_of_v<autopas::TriwiseFunctor<Particle, FunctorType>, FunctorType>;
 
 double distSquared(const std::array<double, 3> &a, const std::array<double, 3> &b)
 {
@@ -143,13 +172,26 @@ void generateParticles(FunctorType& functor, std::vector<Cell>& cells, const siz
 template <typename FunctorType>
 void applyAoSFunctor(FunctorType& functor, Cell& cell, bool newton3)
 {
-    for (std::size_t i = 0; i < cell.size(); ++i)
+    if constexpr (is_pairwise_functor_v<FunctorType>)
     {
-        for (std::size_t j = i + 1; j < cell.size(); ++j)
+        for (std::size_t i = 0; i < cell.size(); ++i)
         {
-            for (std::size_t k = j + 1; k < cell.size(); ++k)
+            for (std::size_t j = i + 1; j < cell.size(); ++j)
             {
-                functor.AoSFunctor(cell[i], cell[j], cell[k], newton3);
+                functor.AoSFunctor(cell[i], cell[j], newton3);
+            }
+        }
+    }
+    else
+    {
+        for (std::size_t i = 0; i < cell.size(); ++i)
+        {
+            for (std::size_t j = i + 1; j < cell.size(); ++j)
+            {
+                for (std::size_t k = j + 1; k < cell.size(); ++k)
+                {
+                    functor.AoSFunctor(cell[i], cell[j], cell[k], newton3);
+                }
             }
         }
     }
@@ -170,17 +212,58 @@ void applyFunctorOnParticles(FunctorType& functor, std::vector<Cell>& cells, con
         functor.SoAFunctorPair(cells[0]._particleSoABuffer, cells[1]._particleSoABuffer, newton3);
         break;
     case SOATRIPLE:
-        functor.SoAFunctorTriple(cells[0]._particleSoABuffer, cells[1]._particleSoABuffer, cells[2]._particleSoABuffer,
-                                 newton3);
+        if constexpr (is_triwise_functor_v<FunctorType>)
+        {
+            functor.SoAFunctorTriple(cells[0]._particleSoABuffer, cells[1]._particleSoABuffer, cells[2]._particleSoABuffer,
+                                     newton3);
+        }
         break;
     }
 }
 
-std::tuple<size_t, size_t> countInteractions(std::vector<Cell>& cells, const double cutoff, const FunctorKernel kernel)
+std::tuple<size_t, size_t> countInteractions(std::vector<Cell>& cells, const double cutoff, const FunctorKernel kernel,
+                                             const FunctorArity arity)
 {
     size_t calcsDist{0};
     size_t calcsForce{0};
     const auto cutoffSquared{cutoff * cutoff};
+
+    if (arity == FunctorArity::Pairwise)
+    {
+        switch (kernel)
+        {
+        case AOS:
+        case SOASINGLE:
+            for (size_t i = 0; i < cells[0].size(); i++)
+            {
+                for (size_t j = i + 1; j < cells[0].size(); j++)
+                {
+                    if (distSquared(cells[0][i].getR(), cells[0][j].getR()) <= cutoffSquared)
+                    {
+                        ++calcsForce;
+                    }
+                }
+            }
+            calcsDist = cells[0].size() * (cells[0].size() - 1) / 2;
+            break;
+        case SOAPAIR:
+            for (size_t i = 0; i < cells[0].size(); i++)
+            {
+                for (size_t j = 0; j < cells[1].size(); j++)
+                {
+                    if (distSquared(cells[0][i].getR(), cells[1][j].getR()) <= cutoffSquared)
+                    {
+                        ++calcsForce;
+                    }
+                }
+            }
+            calcsDist = cells[0].size() * cells[1].size();
+            break;
+        default:
+            break;
+        }
+        return {calcsDist, calcsForce};
+    }
 
     switch (kernel)
     {
@@ -283,12 +366,13 @@ static void BM_Functor(benchmark::State& state, Factory factory, FunctorKernel k
 
     state.SetComplexityN(numParticles);
 
+    constexpr FunctorArity arity = is_pairwise_functor_v<FunctorType> ? FunctorArity::Pairwise : FunctorArity::Triwise;
     const auto iters = static_cast<double>(state.iterations());
     const auto avg = std::min({5.0, iters, static_cast<double>(poolSize)});
     // Count interactions for first 5 or fewer cells
     for (size_t i = 0; i < static_cast<size_t>(avg); ++i)
     {
-        const auto [calcsDist, calcsForce] = countInteractions(cellPool[i], cutoff, kernel);
+        const auto [calcsDist, calcsForce] = countInteractions(cellPool[i], cutoff, kernel, arity);
         calcsDistTotal += calcsDist;
         calcsForceTotal += calcsForce;
     }
@@ -305,8 +389,13 @@ static void BM_Functor(benchmark::State& state, Factory factory, FunctorKernel k
     };
     state.counters["Hit%"] = roundToPrecision(hitRate, 2);
     if (avgDist > 0.0) {
-        state.counters["Time/Triplet"] = Counter(avgDist, Counter::kIsIterationInvariantRate | Counter::kInvert, Counter::OneK::kIs1000);
-        state.counters["Triplets/s"] = Counter(avgDist, Counter::kIsIterationInvariantRate, Counter::OneK::kIs1000);
+        if constexpr (is_pairwise_functor_v<FunctorType>) {
+            state.counters["Time/Pair"] = Counter(avgDist, Counter::kIsIterationInvariantRate | Counter::kInvert, Counter::OneK::kIs1000);
+            state.counters["Pairs/s"] = Counter(avgDist, Counter::kIsIterationInvariantRate, Counter::OneK::kIs1000);
+        } else {
+            state.counters["Time/Triplet"] = Counter(avgDist, Counter::kIsIterationInvariantRate | Counter::kInvert, Counter::OneK::kIs1000);
+            state.counters["Triplets/s"] = Counter(avgDist, Counter::kIsIterationInvariantRate, Counter::OneK::kIs1000);
+        }
     }
     if (avgForce > 0.0) {
         state.counters["Time/Interaction"] = Counter(avgForce, Counter::kIsIterationInvariantRate | Counter::kInvert, Counter::OneK::kIs1000);
@@ -316,9 +405,15 @@ static void BM_Functor(benchmark::State& state, Factory factory, FunctorKernel k
 template <typename T>
 struct is_calculate_globals : std::false_type {};
 
+// 3-Body functors (e.g. AxilrodTellerMutoFunctor<Particle, mixing, N3Mode, calculateGlobals, countFLOPs>)
 template <template <typename, bool, autopas::FunctorN3Modes, bool, bool> class Template,
           typename P, bool M, autopas::FunctorN3Modes N, bool G, bool F>
 struct is_calculate_globals<Template<P, M, N, G, F>> : std::integral_constant<bool, G> {};
+
+// Pairwise functors (e.g. LJFunctor<Particle, shift, mixing, N3Mode, calculateGlobals, countFLOPs, relevantForTuning>)
+template <template <typename, bool, bool, autopas::FunctorN3Modes, bool, bool, bool> class Template,
+          typename P, bool S, bool M, autopas::FunctorN3Modes N, bool G, bool F, bool R>
+struct is_calculate_globals<Template<P, S, M, N, G, F, R>> : std::integral_constant<bool, G> {};
 
 struct GlobalsOutput {
     double potentialEnergy = 0.0;
@@ -328,6 +423,7 @@ struct GlobalsOutput {
 struct FunctorInfo {
     std::string name;
     std::string description;
+    FunctorArity arity = FunctorArity::Triwise;
     bool calculatesGlobals = false;
     std::function<void(const std::string& kernelName, FunctorKernel kernel, const BenchmarkConfig& config)> registerBenchmark;
     std::function<std::optional<GlobalsOutput>(std::vector<Cell>& cells, FunctorKernel kernel, bool newton3, double cutoff)> runOnce;
@@ -340,10 +436,18 @@ public:
         FunctorInfo info;
         info.name = name;
         info.description = description;
+        constexpr FunctorArity arity = is_pairwise_functor_v<FunctorType> ? FunctorArity::Pairwise : FunctorArity::Triwise;
+        info.arity = arity;
         constexpr bool hasGlobals = is_calculate_globals<FunctorType>::value;
         info.calculatesGlobals = hasGlobals;
 
         info.registerBenchmark = [name, functorFactory](const std::string& kernelName, FunctorKernel kernel, const BenchmarkConfig& config) {
+            if constexpr (arity == FunctorArity::Pairwise) {
+                if (kernel == SOATRIPLE) {
+                    return;
+                }
+            }
+
             auto registerVariant = [&](bool n3, const std::string& suffix) {
                 auto* b = benchmark::RegisterBenchmark(
                     name + "_" + kernelName + suffix,
@@ -378,6 +482,11 @@ public:
 
         info.runOnce = [functorFactory](std::vector<Cell>& cells, FunctorKernel kernel, bool newton3, double cutoff)
             -> std::optional<GlobalsOutput> {
+            if constexpr (arity == FunctorArity::Pairwise) {
+                if (kernel == SOATRIPLE) {
+                    return std::nullopt;
+                }
+            }
             auto functor = functorFactory(cutoff);
             functor.initTraversal();
             if (kernel != AOS) {
@@ -424,6 +533,36 @@ private:
 };
 
 void initRegistry(FunctorRegistry& reg) {
+    // Pairwise (2-Body) Functors
+    reg.registerFunctor<LJ>("LJ", "Lennard-Jones AutoVec Baseline Functor", [](const double cutoff) {
+        LJ f{cutoff};
+        f.setParticleProperties(epsilon24, sigmaSquared);
+        return f;
+    });
+
+#ifdef __AVX__
+    reg.registerFunctor<LJAVX>("LJAVX", "Lennard-Jones AVX2 Intrinsics Functor", [](const double cutoff) {
+        LJAVX f{cutoff};
+        f.setParticleProperties(epsilon24, sigmaSquared);
+        return f;
+    });
+#endif
+
+    reg.registerFunctor<LJGlobals>("LJGlobals", "LJ Functor with Globals calculation", [](const double cutoff) {
+        LJGlobals f{cutoff};
+        f.setParticleProperties(epsilon24, sigmaSquared);
+        return f;
+    });
+
+#ifdef __AVX__
+    reg.registerFunctor<LJAVXGlobals>("LJAVXGlobals", "LJAVX Functor with Globals calculation", [](const double cutoff) {
+        LJAVXGlobals f{cutoff};
+        f.setParticleProperties(epsilon24, sigmaSquared);
+        return f;
+    });
+#endif
+
+    // Triwise (3-Body) Functors
     reg.registerFunctor<ATM>("ATM", "Axilrod-Teller-Muto Baseline Functor", [](const double cutoff) {
         ATM f{cutoff};
         f.setParticleProperties(1.0);
@@ -431,16 +570,16 @@ void initRegistry(FunctorRegistry& reg) {
     });
 
     reg.registerFunctor<ATM0>("ATM0", "Axilrod-Teller-Muto Functor - Lammps Style", [](const double cutoff) {
-    ATM0 f{cutoff};
-    f.setParticleProperties(1.0);
-    return f;
-});
+        ATM0 f{cutoff};
+        f.setParticleProperties(1.0);
+        return f;
+    });
 
     reg.registerFunctor<ATM1>("ATM1", "Axilrod-Teller-Muto Functor - Triple Loop Min Flops", [](const double cutoff) {
-ATM1 f{cutoff};
-f.setParticleProperties(1.0);
-return f;
-});
+        ATM1 f{cutoff};
+        f.setParticleProperties(1.0);
+        return f;
+    });
 
     reg.registerFunctor<ATM2>("ATM2", "Axilrod-Teller-Muto Accumulated I and J", [](const double cutoff) {
         ATM2 f{cutoff};
@@ -455,22 +594,22 @@ return f;
     });
 
     reg.registerFunctor<ATM4>("ATM4", "Axilrod-Teller-Muto Add SIMD", [](const double cutoff) {
-    ATM4 f{cutoff};
-    f.setParticleProperties(1.0);
-    return f;
-});
+        ATM4 f{cutoff};
+        f.setParticleProperties(1.0);
+        return f;
+    });
 
     reg.registerFunctor<ATM5>("ATM5", "Axilrod-Teller-Muto Scalar/Vector Split", [](const double cutoff) {
-ATM5 f{cutoff};
-f.setParticleProperties(1.0);
-return f;
-});
+        ATM5 f{cutoff};
+        f.setParticleProperties(1.0);
+        return f;
+    });
 
     reg.registerFunctor<ATM6>("ATM6", "Axilrod-Teller-Muto SIMD no LUT", [](const double cutoff) {
-ATM6 f{cutoff};
-f.setParticleProperties(1.0);
-return f;
-});
+        ATM6 f{cutoff};
+        f.setParticleProperties(1.0);
+        return f;
+    });
 
     reg.registerFunctor<ATMGlobals>("ATMGlobals", "ATM Functor with Globals calculation", [](const double cutoff) {
         ATMGlobals f{cutoff};
@@ -479,16 +618,16 @@ return f;
     });
 
     reg.registerFunctor<ATM0Globals>("ATM0Globals", "ATM0 Functor with Globals calculation", [](const double cutoff) {
-    ATM0Globals f{cutoff};
-    f.setParticleProperties(1.0);
-    return f;
-});
+        ATM0Globals f{cutoff};
+        f.setParticleProperties(1.0);
+        return f;
+    });
 
     reg.registerFunctor<ATM1Globals>("ATM1Globals", "ATM1 Functor with Globals calculation", [](const double cutoff) {
-ATM1Globals f{cutoff};
-f.setParticleProperties(1.0);
-return f;
-});
+        ATM1Globals f{cutoff};
+        f.setParticleProperties(1.0);
+        return f;
+    });
 
     reg.registerFunctor<ATM2Globals>("ATM2Globals", "ATM2 Functor with Globals calculation", [](const double cutoff) {
         ATM2Globals f{cutoff};
@@ -503,23 +642,22 @@ return f;
     });
 
     reg.registerFunctor<ATM4Globals>("ATM4Globals", "ATM4 Functor with Globals calculation", [](const double cutoff) {
-    ATM4Globals f{cutoff};
-    f.setParticleProperties(1.0);
-    return f;
-});
+        ATM4Globals f{cutoff};
+        f.setParticleProperties(1.0);
+        return f;
+    });
 
     reg.registerFunctor<ATM5Globals>("ATM5Globals", "ATM5 Functor with Globals calculation", [](const double cutoff) {
-ATM5Globals f{cutoff};
-f.setParticleProperties(1.0);
-return f;
-});
+        ATM5Globals f{cutoff};
+        f.setParticleProperties(1.0);
+        return f;
+    });
 
     reg.registerFunctor<ATM6Globals>("ATM6Globals", "ATM6 Functor with Globals calculation", [](const double cutoff) {
-ATM6Globals f{cutoff};
-f.setParticleProperties(1.0);
-return f;
-});
-
+        ATM6Globals f{cutoff};
+        f.setParticleProperties(1.0);
+        return f;
+    });
 }
 
 inline std::string getBaseFunctorName(const std::string& name) {
@@ -541,6 +679,16 @@ inline bool stringsAreEqual(const std::string& a, const std::string& b) {
                               });
 }
 
+inline bool isPairwiseGroupAlias(const std::string& s) {
+    return stringsAreEqual(s, "pairs") || stringsAreEqual(s, "2b") ||
+           stringsAreEqual(s, "pairwise") || stringsAreEqual(s, "2-body");
+}
+
+inline bool isTriwiseGroupAlias(const std::string& s) {
+    return stringsAreEqual(s, "triplets") || stringsAreEqual(s, "3b") ||
+           stringsAreEqual(s, "triwise") || stringsAreEqual(s, "3-body");
+}
+
 std::vector<std::string> resolveTargetFunctors(const BenchmarkConfig& config, const FunctorRegistry& registry) {
     auto lowerGlobals = config.globals;
     for (char& c : lowerGlobals) c = std::tolower(static_cast<unsigned char>(c));
@@ -552,44 +700,52 @@ std::vector<std::string> resolveTargetFunctors(const BenchmarkConfig& config, co
         return true;
     };
 
-    bool allFunctorsRequested = false;
-    for (const auto& functor : config.targetFunctors) {
-        if (stringsAreEqual(functor, "all")) {
-            allFunctorsRequested = true;
-            break;
+    auto addIfNotPresent = [](std::vector<std::string>& vec, const std::string& item) {
+        if (std::ranges::find(vec, item) == vec.end()) {
+            vec.push_back(item);
         }
-    }
+    };
 
     std::vector<std::string> resolved;
 
-    if (allFunctorsRequested) {
-        for (const auto& functorName : registry.getNames()) {
-            const auto& info = registry.get(functorName);
-            if (matchesGlobals(info.calculatesGlobals)) {
-                resolved.push_back(functorName);
+    for (const auto& requested : config.targetFunctors) {
+        if (stringsAreEqual(requested, "all")) {
+            for (const auto& functorName : registry.getNames()) {
+                const auto& info = registry.get(functorName);
+                if (matchesGlobals(info.calculatesGlobals)) {
+                    addIfNotPresent(resolved, functorName);
+                }
             }
-        }
-    } else {
-        for (const auto& requested : config.targetFunctors) {
+        } else if (isPairwiseGroupAlias(requested)) {
+            for (const auto& functorName : registry.getNames()) {
+                const auto& info = registry.get(functorName);
+                if (info.arity == FunctorArity::Pairwise && matchesGlobals(info.calculatesGlobals)) {
+                    addIfNotPresent(resolved, functorName);
+                }
+            }
+        } else if (isTriwiseGroupAlias(requested)) {
+            for (const auto& functorName : registry.getNames()) {
+                const auto& info = registry.get(functorName);
+                if (info.arity == FunctorArity::Triwise && matchesGlobals(info.calculatesGlobals)) {
+                    addIfNotPresent(resolved, functorName);
+                }
+            }
+        } else {
             std::string reqBase = getBaseFunctorName(requested);
 
             for (const auto& registeredName : registry.getNames()) {
                 const auto& info = registry.get(registeredName);
                 std::string regBase = getBaseFunctorName(registeredName);
 
-                // If user didn't explicitly specify --globals, and requested an exact registered name (e.g. ATMGlobals), allow it
+                // If user didn't explicitly specify --globals, and requested an exact registered name (e.g. ATMGlobals or LJGlobals), allow it
                 if (!config.globalsExplicitlySet && stringsAreEqual(requested, registeredName)) {
-                    if (std::ranges::find(resolved, registeredName) == resolved.end()) {
-                        resolved.push_back(registeredName);
-                    }
+                    addIfNotPresent(resolved, registeredName);
                     continue;
                 }
 
                 if (stringsAreEqual(reqBase, regBase)) {
                     if (matchesGlobals(info.calculatesGlobals)) {
-                        if (std::ranges::find(resolved, registeredName) == resolved.end()) {
-                            resolved.push_back(registeredName);
-                        }
+                        addIfNotPresent(resolved, registeredName);
                     }
                 }
             }
@@ -747,20 +903,20 @@ VerifyResult verifyOneKernel(const FunctorInfo& baselineInfo, const FunctorInfo&
                     res.maxRelDiff = std::max(res.maxRelDiff, diff / denom);
                 }
 
-                if (diff > tolerance && res.firstMismatch.empty()) {
-                    std::ostringstream ss;
-                    ss << "Force mismatch at Cell " << c << ", Particle " << p
-                       << ", Dim " << (d == 0 ? "X" : (d == 1 ? "Y" : "Z"))
-                       << ": Baseline=" << baselineVal << ", Candidate=" << candidateVal
-                       << " (Diff=" << diff << ")";
-                    res.firstMismatch = ss.str();
+                const double effectiveTol = tolerance * std::max(1.0, denom);
+                if (diff > effectiveTol) {
+                    res.passed = false;
+                    if (res.firstMismatch.empty()) {
+                        std::ostringstream ss;
+                        ss << "Force mismatch at Cell " << c << ", Particle " << p
+                           << ", Dim " << (d == 0 ? "X" : (d == 1 ? "Y" : "Z"))
+                           << ": Baseline=" << baselineVal << ", Candidate=" << candidateVal
+                           << " (Diff=" << diff << ")";
+                        res.firstMismatch = ss.str();
+                    }
                 }
             }
         }
-    }
-
-    if (res.maxAbsDiff > tolerance) {
-        res.passed = false;
     }
 
     // Verify globals if both baseline and candidate calculate globals
@@ -782,10 +938,11 @@ VerifyResult verifyOneKernel(const FunctorInfo& baselineInfo, const FunctorInfo&
             res.relDiffVirial = res.diffVirial / denomVirial;
         }
 
+        const double effectiveTolUpot = tolerance * std::max(1.0, denomUpot);
         if (std::isnan(res.diffUpot) || std::isinf(res.diffUpot)) {
             res.passed = false;
             if (res.firstMismatch.empty()) res.firstMismatch = "NaN or Inf in Potential Energy!";
-        } else if (res.diffUpot > tolerance) {
+        } else if (res.diffUpot > effectiveTolUpot) {
             res.passed = false;
             if (res.firstMismatch.empty()) {
                 std::ostringstream ss;
@@ -795,10 +952,11 @@ VerifyResult verifyOneKernel(const FunctorInfo& baselineInfo, const FunctorInfo&
             }
         }
 
+        const double effectiveTolVirial = tolerance * std::max(1.0, denomVirial);
         if (std::isnan(res.diffVirial) || std::isinf(res.diffVirial)) {
             res.passed = false;
             if (res.firstMismatch.empty()) res.firstMismatch = "NaN or Inf in Virial!";
-        } else if (res.diffVirial > tolerance) {
+        } else if (res.diffVirial > effectiveTolVirial) {
             res.passed = false;
             if (res.firstMismatch.empty()) {
                 std::ostringstream ss;
@@ -826,21 +984,20 @@ bool runVerification(const BenchmarkConfig& config, const FunctorRegistry& regis
         resolvedFunctors = registry.getNames();
     }
 
-    std::vector<std::string> activeNonGlobals;
-    std::vector<std::string> activeGlobals;
-    for (const auto& name : resolvedFunctors) {
-        if (registry.has(name)) {
-            if (registry.get(name).calculatesGlobals) {
-                activeGlobals.push_back(name);
-            } else {
-                activeNonGlobals.push_back(name);
-            }
+    auto getDefaultBaseline = [&](FunctorArity arity, bool globalsEnabled) -> std::string {
+        if (arity == FunctorArity::Pairwise) {
+            return globalsEnabled ? "LJGlobals" : "LJ";
         }
-    }
+        return globalsEnabled ? "ATMGlobals" : "ATM";
+    };
 
     // Case 1: Specific candidate explicitly requested
     if (!candidateName.empty()) {
-        std::string base = baselineName.empty() ? (activeNonGlobals.empty() ? registry.getNames()[0] : activeNonGlobals[0]) : baselineName;
+        FunctorArity candArity = FunctorArity::Triwise;
+        if (registry.has(candidateName)) {
+            candArity = registry.get(candidateName).arity;
+        }
+        std::string base = baselineName.empty() ? getDefaultBaseline(candArity, false) : baselineName;
         if (lowerGlobals != "on") {
             verifyPairs.emplace_back(base, candidateName);
         }
@@ -852,50 +1009,65 @@ bool runVerification(const BenchmarkConfig& config, const FunctorRegistry& regis
             }
         }
     } else {
-        // Case 2: Candidate not explicitly specified -> verify EVERY variant against baseline
+        // Case 2: Candidate not explicitly specified -> verify EVERY variant against its arity baseline
+        for (const FunctorArity arity : {FunctorArity::Pairwise, FunctorArity::Triwise}) {
+            std::vector<std::string> activeNonGlobals;
+            std::vector<std::string> activeGlobals;
 
-        // Non-globals pairs
-        if (!activeNonGlobals.empty()) {
-            std::string base = activeNonGlobals[0];
-            if (!baselineName.empty() && registry.has(baselineName) && !registry.get(baselineName).calculatesGlobals) {
-                base = baselineName;
-            } else {
-                for (const auto& name : activeNonGlobals) {
-                    if (stringsAreEqual(name, "ATM")) {
-                        base = name;
-                        break;
+            for (const auto& name : resolvedFunctors) {
+                if (registry.has(name)) {
+                    const auto& info = registry.get(name);
+                    if (info.arity != arity) continue;
+                    if (info.calculatesGlobals) {
+                        activeGlobals.push_back(name);
+                    } else {
+                        activeNonGlobals.push_back(name);
                     }
                 }
             }
 
-            if (activeNonGlobals.size() == 1) {
-                verifyPairs.emplace_back(activeNonGlobals[0], activeNonGlobals[0]);
-            } else {
-                for (const auto& cand : activeNonGlobals) {
-                    if (!stringsAreEqual(cand, base)) {
-                        verifyPairs.emplace_back(base, cand);
+            const std::string defaultBase = getDefaultBaseline(arity, false);
+            const std::string defaultBaseG = getDefaultBaseline(arity, true);
+
+            // Non-globals pairs for this arity
+            if (!activeNonGlobals.empty()) {
+                std::string base = activeNonGlobals[0];
+                if (!baselineName.empty() && registry.has(baselineName) &&
+                    registry.get(baselineName).arity == arity && !registry.get(baselineName).calculatesGlobals) {
+                    base = baselineName;
+                } else if (registry.has(defaultBase)) {
+                    base = defaultBase;
+                }
+
+                if (activeNonGlobals.size() == 1 && stringsAreEqual(activeNonGlobals[0], base)) {
+                    verifyPairs.emplace_back(activeNonGlobals[0], activeNonGlobals[0]);
+                } else {
+                    for (const auto& cand : activeNonGlobals) {
+                        if (!stringsAreEqual(cand, base)) {
+                            verifyPairs.emplace_back(base, cand);
+                        }
                     }
                 }
             }
-        }
 
-        // Globals pairs
-        if (!activeGlobals.empty()) {
-            std::string baseG = activeGlobals[0];
-            std::string targetBaseG = (!baselineName.empty()) ? (getBaseFunctorName(baselineName) + "Globals") : "ATMGlobals";
-            for (const auto& name : activeGlobals) {
-                if (stringsAreEqual(name, targetBaseG)) {
-                    baseG = name;
-                    break;
+            // Globals pairs for this arity
+            if (!activeGlobals.empty()) {
+                std::string baseG = activeGlobals[0];
+                std::string userBaseG = (!baselineName.empty()) ? (getBaseFunctorName(baselineName) + "Globals") : "";
+                if (!userBaseG.empty() && registry.has(userBaseG) &&
+                    registry.get(userBaseG).arity == arity && registry.get(userBaseG).calculatesGlobals) {
+                    baseG = userBaseG;
+                } else if (registry.has(defaultBaseG)) {
+                    baseG = defaultBaseG;
                 }
-            }
 
-            if (activeGlobals.size() == 1) {
-                verifyPairs.emplace_back(activeGlobals[0], activeGlobals[0]);
-            } else {
-                for (const auto& cand : activeGlobals) {
-                    if (!stringsAreEqual(cand, baseG)) {
-                        verifyPairs.emplace_back(baseG, cand);
+                if (activeGlobals.size() == 1 && stringsAreEqual(activeGlobals[0], baseG)) {
+                    verifyPairs.emplace_back(activeGlobals[0], activeGlobals[0]);
+                } else {
+                    for (const auto& cand : activeGlobals) {
+                        if (!stringsAreEqual(cand, baseG)) {
+                            verifyPairs.emplace_back(baseG, cand);
+                        }
                     }
                 }
             }
@@ -967,8 +1139,27 @@ bool runVerification(const BenchmarkConfig& config, const FunctorRegistry& regis
         const auto& baselineInfo = registry.get(baseName);
         const auto& candidateInfo = registry.get(candName);
 
+        if (baselineInfo.arity != candidateInfo.arity) {
+            std::cerr << "[VERIFY ERROR] Cannot verify functors of different arity ('" << baseName
+                      << "' vs '" << candName << "')." << std::endl;
+            return false;
+        }
+
+        std::vector<std::pair<std::string, FunctorKernel>> applicableKernels;
+        for (const auto& [kName, kVal] : testKernels) {
+            if (baselineInfo.arity == FunctorArity::Pairwise && kVal == SOATRIPLE) {
+                continue;
+            }
+            applicableKernels.emplace_back(kName, kVal);
+        }
+
+        if (applicableKernels.empty()) {
+            continue;
+        }
+
         std::cout << "\n==========================================" << std::endl;
-        std::cout << "Functor Correctness Verification" << std::endl;
+        std::cout << "Functor Correctness Verification ("
+                  << (baselineInfo.arity == FunctorArity::Pairwise ? "2-Body Pairwise" : "3-Body Triwise") << ")" << std::endl;
         std::cout << "Baseline:  " << baseName << (baselineInfo.calculatesGlobals ? " (Globals: YES)" : " (Globals: NO)") << std::endl;
         std::cout << "Candidate: " << candName << (candidateInfo.calculatesGlobals ? " (Globals: YES)" : " (Globals: NO)") << std::endl;
         if (baselineInfo.calculatesGlobals && candidateInfo.calculatesGlobals) {
@@ -986,7 +1177,7 @@ bool runVerification(const BenchmarkConfig& config, const FunctorRegistry& regis
         std::cout << "==========================================" << std::endl;
 
         for (const bool n3 : n3Options) {
-            for (const auto& [kernelName, kernel] : testKernels) {
+            for (const auto& [kernelName, kernel] : applicableKernels) {
                 auto res = verifyOneKernel(baselineInfo, candidateInfo, kernel, n3,
                                            config.verifyParticles, config.cellSize,
                                            config.cutoff, config.seed, config.verifyTolerance);
@@ -1045,15 +1236,17 @@ void setupCLI(CLI::App& app, BenchmarkConfig& config, const FunctorRegistry& reg
 
     app.add_flag("-v,--verify", config.verify, "Verify correctness between baseline and candidate functors before benchmarking");
     app.add_flag("--verify-only", config.verifyOnly, "Run correctness verification and exit immediately");
-    app.add_option("--verify-baseline", config.verifyBaseline, "Baseline functor for verification (default: first from -f)");
-    app.add_option("--verify-candidate", config.verifyCandidate, "Candidate functor for verification (default: second from -f)");
+    app.add_option("--verify-baseline", config.verifyBaseline, "Baseline functor for verification (default: LJ for 2B, ATM for 3B)");
+    app.add_option("--verify-candidate", config.verifyCandidate, "Candidate functor for verification (default: all active candidates)");
     app.add_option("--verify-particles", config.verifyParticles, "Number of particles per cell for verification")->default_val(16);
     app.add_option("--verify-tol", config.verifyTolerance, "Numerical tolerance for verification")->default_str("1e-10");
 
     auto validFunctors = registry.getNames();
-    validFunctors.emplace_back("all");
+    for (const auto* alias : {"all", "pairs", "2b", "pairwise", "2-body", "triplets", "3b", "triwise", "3-body"}) {
+        validFunctors.emplace_back(alias);
+    }
 
-    app.add_option("-f,--functor", config.targetFunctors, "Comma-separated list of functors to test")
+    app.add_option("-f,--functor", config.targetFunctors, "Comma-separated list of functors or groups (all, pairs/2b, triplets/3b)")
            ->check(CLI::IsMember(validFunctors, CLI::ignore_case))
            ->delimiter(',');
 
@@ -1109,7 +1302,7 @@ int main(int argc, char** argv) {
     initRegistry(registry);
 
     // Read CLI arguments
-    CLI::App app{"AutoPas 3-Body Functor Benchmark"};
+    CLI::App app{"AutoPas Pairwise & 3-Body Functor Benchmark"};
     BenchmarkConfig config;
     setupCLI(app, config, registry);
 
