@@ -21,6 +21,7 @@ target_link_libraries(AP_Functor_Bench
         PUBLIC
         autopas
         molecularDynamicsLibrary
+        hwy
         )
 
 target_include_directories(AP_Functor_Bench PRIVATE functor-variants)

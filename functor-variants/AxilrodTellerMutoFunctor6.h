@@ -500,7 +500,7 @@ class AxilrodTellerMutoFunctor6
   }
 
   void SoAFunctorTriple(autopas::SoAView<SoAArraysType> soa1, autopas::SoAView<SoAArraysType> soa2,
-                        autopas::SoAView<SoAArraysType> soa3, bool newton3) final {
+                        autopas::SoAView<SoAArraysType> soa3, const bool newton3) final {
     if (soa1.size() == 0 || soa2.size() == 0 || soa3.size() == 0) return;
 
     // 2-tier hybrid: Inverted scalar loop (ATM3) for small soa1 (< 8) to avoid SIMD overhead and enable early-branch,

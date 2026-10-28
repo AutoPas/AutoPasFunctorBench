@@ -4,7 +4,18 @@
 #include <molecularDynamicsLibrary/LJFunctor.h>
 #ifdef __AVX__
 #include <molecularDynamicsLibrary/LJFunctorAVX.h>
+#include <LJFunctorAVXNewMixing.h>
 #endif
+#include <molecularDynamicsLibrary/LJFunctorHWY.h>
+#include <LJFunctorHWYClean.h>
+#include <LJFunctorHWYSwissKnife.h>
+#include <LJFunctorHWYOnTheFly1D.h>
+#include <LJFunctorHWYOptimal.h>
+#include <LJFunctorNewMixing.h>
+#include <LJFunctorRowHoist.h>
+#include <LJFunctorSwissKnife.h>
+#include <LJFunctorClean.h>
+#include <LJFunctorOptimal.h>
 #include <molecularDynamicsLibrary/AxilrodTellerMutoFunctor.h>
 #include <AxilrodTellerMutoFunctor0.h>
 #include <AxilrodTellerMutoFunctor1.h>
@@ -26,6 +37,7 @@
 #include <sstream>
 #include <optional>
 #include <type_traits>
+#include <memory>
 
 #ifdef ENABLE_ITT
 #include <ittnotify.h>
@@ -53,13 +65,64 @@ constexpr bool globals{false};
 constexpr double epsilon24{24.0};
 constexpr double sigmaSquared{1.0};
 
-// Pairwise functors (2-Body)
-using LJ = mdLib::LJFunctor<Particle, shift, mixing, functorN3Modes, globals>;
-using LJGlobals = mdLib::LJFunctor<Particle, shift, mixing, functorN3Modes, true>;
+ParticlePropertiesLibrary<double, size_t>& getSharedPPL(double cutoff);
+
+// Pairwise functors (2-Body) - No Mixing
+using LJ = mdLib::LJFunctor<Particle, shift, false, functorN3Modes, globals>;
+using LJGlobals = mdLib::LJFunctor<Particle, shift, false, functorN3Modes, true>;
 #ifdef __AVX__
-using LJAVX = mdLib::LJFunctorAVX<Particle, shift, mixing, functorN3Modes, globals>;
-using LJAVXGlobals = mdLib::LJFunctorAVX<Particle, shift, mixing, functorN3Modes, true>;
+using LJAVX = mdLib::LJFunctorAVX<Particle, shift, false, functorN3Modes, globals>;
+using LJAVXGlobals = mdLib::LJFunctorAVX<Particle, shift, false, functorN3Modes, true>;
 #endif
+
+// Pairwise functors (2-Body) - Mixing Comparisons
+using LJMixPPL = mdLib::LJFunctor<Particle, shift, true, functorN3Modes, globals>;
+using LJMixPPLGlobals = mdLib::LJFunctor<Particle, shift, true, functorN3Modes, true>;
+
+using LJMixRowHoist = mdLib::LJFunctorRowHoist<Particle, shift, true, functorN3Modes, globals>;
+using LJMixRowHoistGlobals = mdLib::LJFunctorRowHoist<Particle, shift, true, functorN3Modes, true>;
+
+using LJMixNew = mdLib::LJFunctorNewMixing<Particle, shift, true, functorN3Modes, globals>;
+using LJMixNewGlobals = mdLib::LJFunctorNewMixing<Particle, shift, true, functorN3Modes, true>;
+
+using LJMixSwissKnife = mdLib::LJFunctorSwissKnife<Particle, shift, true, functorN3Modes, globals>;
+using LJMixSwissKnifeGlobals = mdLib::LJFunctorSwissKnife<Particle, shift, true, functorN3Modes, true>;
+
+using LJMixClean = mdLib::LJFunctorClean<Particle, shift, true, functorN3Modes, globals>;
+using LJMixCleanGlobals = mdLib::LJFunctorClean<Particle, shift, true, functorN3Modes, true>;
+
+using LJMixOptimal = mdLib::LJFunctorOptimal<Particle, shift, true, functorN3Modes, globals>;
+using LJMixOptimalGlobals = mdLib::LJFunctorOptimal<Particle, shift, true, functorN3Modes, true>;
+
+#ifdef __AVX__
+using LJAVXMixPPL = mdLib::LJFunctorAVX<Particle, shift, true, functorN3Modes, globals>;
+using LJAVXMixPPLGlobals = mdLib::LJFunctorAVX<Particle, shift, true, functorN3Modes, true>;
+
+using LJAVXMixNew = mdLib::LJFunctorAVXNewMixing<Particle, shift, true, functorN3Modes, globals>;
+using LJAVXMixNewGlobals = mdLib::LJFunctorAVXNewMixing<Particle, shift, true, functorN3Modes, true>;
+
+using LJAVXMix = LJAVXMixPPL;
+using LJAVXMixGlobals = LJAVXMixPPLGlobals;
+#endif
+
+using LJMix = LJMixPPL;
+using LJMixGlobals = LJMixPPLGlobals;
+
+using LJHWYMix = mdLib::LJFunctorHWY<Particle, shift, true, functorN3Modes, globals>;
+using LJHWYMixGlobals = mdLib::LJFunctorHWY<Particle, shift, true, functorN3Modes, true>;
+
+using LJHWYMixClean = mdLib::LJFunctorHWYClean<Particle, shift, true, functorN3Modes, globals>;
+using LJHWYMixCleanGlobals = mdLib::LJFunctorHWYClean<Particle, shift, true, functorN3Modes, true>;
+
+using LJHWYMixSwissKnife = mdLib::LJFunctorHWYSwissKnife<Particle, shift, true, functorN3Modes, globals>;
+using LJHWYMixSwissKnifeGlobals = mdLib::LJFunctorHWYSwissKnife<Particle, shift, true, functorN3Modes, true>;
+
+using LJHWYMixOnTheFly1D = mdLib::LJFunctorHWYOnTheFly1D<Particle, shift, true, functorN3Modes, globals>;
+using LJHWYMixOnTheFly1DGlobals = mdLib::LJFunctorHWYOnTheFly1D<Particle, shift, true, functorN3Modes, true>;
+
+using LJHWYMixOptimal = mdLib::LJFunctorHWYOptimal<Particle, shift, true, functorN3Modes, globals>;
+using LJHWYMixOptimalGlobals = mdLib::LJFunctorHWYOptimal<Particle, shift, true, functorN3Modes, true>;
+
 
 // Triwise functors (3-Body)
 using ATM = mdLib::AxilrodTellerMutoFunctor<Particle, mixing, functorN3Modes, globals>;
@@ -86,6 +149,7 @@ struct BenchmarkConfig {
     double cellSize = 3;
     double cutoff = 3;
     size_t cellPoolSize = 1000;
+    size_t numTypes = 1;
     std::vector<std::string> targetFunctors = {"all"};
     std::vector<std::string> targetKernels = {"all"};
     std::string newton3 = "on";
@@ -130,22 +194,26 @@ double distSquared(const std::array<double, 3> &a, const std::array<double, 3> &
 
 template <typename FunctorType>
 void generateParticles(FunctorType& functor, std::vector<Cell>& cells, const size_t numberOfParticles,
-                       const double cellSize, const FunctorKernel kernel, const uint32_t seed)
+                       const double cellSize, const FunctorKernel kernel, const uint32_t seed, const size_t numTypes = 1)
 {
     // generate randomly distributed particles with deterministic seed
     std::mt19937 gen(seed);
     std::uniform_real_distribution<double> dis(0.0, cellSize);
 
+    const auto& ppl = getSharedPPL(cellSize); // cutoff / cellSize
     auto fillCellWithParticles = [&](Cell& cell, const double xShift, const double yShift, const double zShift, const size_t startId)
     {
         for (size_t i = 0; i < numberOfParticles; ++i)
         {
+            const size_t typeId = (startId + i) % std::max<size_t>(1, numTypes);
             Particle p{
                 {dis(gen) + xShift, dis(gen) + yShift, dis(gen) + zShift},
                 {0., 0., 0.},
                 startId + i,
-                0
+                typeId
             };
+            p.setSqrtEpsilon(std::sqrt(ppl.getEpsilon(typeId)));
+            p.setHalfSigma(ppl.getSigma(typeId) * 0.5);
             cell.addParticle(p); // Add particle to the current cell
         }
     };
@@ -334,7 +402,7 @@ std::tuple<size_t, size_t> countInteractions(std::vector<Cell>& cells, const dou
 
 
 template <typename FunctorType, typename Factory>
-static void BM_Functor(benchmark::State& state, Factory factory, FunctorKernel kernel, bool newton3, uint32_t seed, size_t poolSize)
+static void BM_Functor(benchmark::State& state, Factory factory, FunctorKernel kernel, bool newton3, uint32_t seed, size_t poolSize, size_t numTypes)
 {
     const auto numParticles = static_cast<size_t>(state.range(0));
     const auto cellSize = static_cast<double>(state.range(1));
@@ -347,7 +415,7 @@ static void BM_Functor(benchmark::State& state, Factory factory, FunctorKernel k
     std::vector<std::vector<Cell>> cellPool(poolSize, std::vector<Cell>{3});
 
     for (size_t poolIdx = 0; poolIdx < cellPool.size(); ++poolIdx) {
-        generateParticles(functor, cellPool[poolIdx], numParticles, cellSize, kernel, seed + static_cast<uint32_t>(poolIdx));
+        generateParticles(functor, cellPool[poolIdx], numParticles, cellSize, kernel, seed + static_cast<uint32_t>(poolIdx), numTypes);
     }
 
     size_t pool_index = 0;
@@ -452,7 +520,7 @@ public:
                 auto* b = benchmark::RegisterBenchmark(
                     name + "_" + kernelName + suffix,
                     [=](benchmark::State& state) {
-                        BM_Functor<FunctorType>(state, functorFactory, kernel, n3, config.seed, config.cellPoolSize);
+                        BM_Functor<FunctorType>(state, functorFactory, kernel, n3, config.seed, config.cellPoolSize, config.numTypes);
                     });
 
                 if (!config.particles.empty()) {
@@ -532,21 +600,106 @@ private:
     std::vector<std::string> _names;
 };
 
+ParticlePropertiesLibrary<double, size_t>& getSharedPPL(const double cutoff) {
+    static std::unordered_map<double, std::unique_ptr<ParticlePropertiesLibrary<double, size_t>>> cache;
+    auto it = cache.find(cutoff);
+    if (it == cache.end()) {
+        auto ppl = std::make_unique<ParticlePropertiesLibrary<double, size_t>>(cutoff);
+        // Type 0 matches non-mixing LJ (epsilon = 1.0 -> epsilon24 = 24.0, sigma = 1.0 -> sigmaSq = 1.0)
+        ppl->addSiteType(0, 1.0);
+        ppl->addLJParametersToSite(0, 1.0, 1.0);
+        // Additional types for multi-component mixture benchmarks (--types > 1)
+        ppl->addSiteType(1, 1.0);
+        ppl->addLJParametersToSite(1, 1.5, 1.1);
+        ppl->addSiteType(2, 1.0);
+        ppl->addLJParametersToSite(2, 0.8, 0.9);
+        ppl->addSiteType(3, 1.0);
+        ppl->addLJParametersToSite(3, 1.2, 1.05);
+        ppl->calculateMixingCoefficients();
+        it = cache.emplace(cutoff, std::move(ppl)).first;
+    }
+    return *(it->second);
+}
+
 void initRegistry(FunctorRegistry& reg) {
     // Pairwise (2-Body) Functors
-    reg.registerFunctor<LJ>("LJ", "Lennard-Jones AutoVec Baseline Functor", [](const double cutoff) {
+    reg.registerFunctor<LJ>("LJ", "Lennard-Jones AutoVec Baseline Functor (mixing=false)", [](const double cutoff) {
         LJ f{cutoff};
         f.setParticleProperties(epsilon24, sigmaSquared);
         return f;
     });
 
 #ifdef __AVX__
-    reg.registerFunctor<LJAVX>("LJAVX", "Lennard-Jones AVX2 Intrinsics Functor", [](const double cutoff) {
+    reg.registerFunctor<LJAVX>("LJAVX", "Lennard-Jones AVX2 Intrinsics Functor (mixing=false)", [](const double cutoff) {
         LJAVX f{cutoff};
         f.setParticleProperties(epsilon24, sigmaSquared);
         return f;
     });
 #endif
+
+    reg.registerFunctor<LJMixPPL>("LJMixPPL", "LJ AutoVec Functor with existing PPL Mixing (O(N^2) per-particle preload + heap resize)", [](const double cutoff) {
+        return LJMixPPL{cutoff, getSharedPPL(cutoff)};
+    });
+
+    reg.registerFunctor<LJMixRowHoist>("LJMixRowHoist", "LJ AutoVec Functor with pure Row Hoisting from CompactMixingTable", [](const double cutoff) {
+        return LJMixRowHoist{cutoff, getSharedPPL(cutoff)};
+    });
+
+    reg.registerFunctor<LJMixNew>("LJMixNew", "Simplified Unified LJ AutoVec Mixing (CompactMixingTable + 64B-Aligned SoAMixingPreloadCache)", [](const double cutoff) {
+        return LJMixNew{cutoff, getSharedPPL(cutoff)};
+    });
+
+    reg.registerFunctor<LJMixSwissKnife>("LJMixSwissKnife", "Multi-Regime LJ Functor (Homogeneous + Small-N Row Hoist + Large-N Preload)", [](const double cutoff) {
+        return LJMixSwissKnife{cutoff, getSharedPPL(cutoff)};
+    });
+
+    reg.registerFunctor<LJMixClean>("LJMixClean", "Clean Minimalist LJ Functor (<350 lines, unified mixing)", [](const double cutoff) {
+        return LJMixClean{cutoff, getSharedPPL(cutoff)};
+    });
+
+    reg.registerFunctor<LJMixOptimal>("LJMixOptimal", "Optimal Auto-Vectorized LJ Functor (1D Parameter Projection + Scalar Shortcut)", [](const double cutoff) {
+        return LJMixOptimal{cutoff, getSharedPPL(cutoff)};
+    });
+
+#ifdef __AVX__
+    reg.registerFunctor<LJAVXMixPPL>("LJAVXMixPPL", "LJ AVX2 Functor with existing PPL Mixing (scalar inner-loop gathers via _mm256_set_pd)", [](const double cutoff) {
+        return LJAVXMixPPL{cutoff, getSharedPPL(cutoff)};
+    });
+
+    reg.registerFunctor<LJAVXMix>("LJAVXMix", "LJ AVX2 Functor with Mixing", [](const double cutoff) {
+        return LJAVXMix{cutoff, getSharedPPL(cutoff)};
+    });
+
+    reg.registerFunctor<LJAVXMixNew>("LJAVXMixNew", "Simplified Unified LJ AVX2 Mixing (CompactMixingTable + 64B-Aligned SoAMixingPreloadCache + _mm256_load_pd)", [](const double cutoff) {
+        return LJAVXMixNew{cutoff, getSharedPPL(cutoff)};
+    });
+#endif
+
+    reg.registerFunctor<LJMix>("LJMix", "LJ AutoVec Functor with Mixing", [](const double cutoff) {
+        return LJMix{cutoff, getSharedPPL(cutoff)};
+    });
+
+    reg.registerFunctor<LJHWYMix>("LJHWYMix", "LJ Highway Functor with Mixing", [](const double cutoff) {
+        LJHWYMix f{cutoff, getSharedPPL(cutoff)};
+        f.setVecPattern(autopas::VectorizationPatternOption::p1xVec);
+        return f;
+    });
+
+    reg.registerFunctor<LJHWYMixClean>("LJHWYMixClean", "LJ Highway Functor with Clean Preload Mixing", [](const double cutoff) {
+        return LJHWYMixClean{cutoff, getSharedPPL(cutoff)};
+    });
+
+    reg.registerFunctor<LJHWYMixSwissKnife>("LJHWYMixSwissKnife", "LJ Highway Functor with Swiss Knife Multi-Regime Mixing", [](const double cutoff) {
+        return LJHWYMixSwissKnife{cutoff, getSharedPPL(cutoff)};
+    });
+
+    reg.registerFunctor<LJHWYMixOnTheFly1D>("LJHWYMixOnTheFly1D", "LJ Highway Functor with 1D On-The-Fly Mixing", [](const double cutoff) {
+        return LJHWYMixOnTheFly1D{cutoff, getSharedPPL(cutoff)};
+    });
+
+    reg.registerFunctor<LJHWYMixOptimal>("LJHWYMixOptimal", "Optimal Multi-Regime Highway Functor (1D Projection + Scalar Shortcut + Homogeneous Broadcast)", [](const double cutoff) {
+        return LJHWYMixOptimal{cutoff, getSharedPPL(cutoff)};
+    });
 
     reg.registerFunctor<LJGlobals>("LJGlobals", "LJ Functor with Globals calculation", [](const double cutoff) {
         LJGlobals f{cutoff};
@@ -561,6 +714,70 @@ void initRegistry(FunctorRegistry& reg) {
         return f;
     });
 #endif
+
+    reg.registerFunctor<LJMixPPLGlobals>("LJMixPPLGlobals", "LJMixPPL Functor with Globals calculation", [](const double cutoff) {
+        return LJMixPPLGlobals{cutoff, getSharedPPL(cutoff)};
+    });
+
+    reg.registerFunctor<LJMixRowHoistGlobals>("LJMixRowHoistGlobals", "LJMixRowHoist Functor with Globals calculation", [](const double cutoff) {
+        return LJMixRowHoistGlobals{cutoff, getSharedPPL(cutoff)};
+    });
+
+    reg.registerFunctor<LJMixNewGlobals>("LJMixNewGlobals", "LJMixNew Functor with Globals calculation", [](const double cutoff) {
+        return LJMixNewGlobals{cutoff, getSharedPPL(cutoff)};
+    });
+
+    reg.registerFunctor<LJMixSwissKnifeGlobals>("LJMixSwissKnifeGlobals", "LJMixSwissKnife Functor with Globals calculation", [](const double cutoff) {
+        return LJMixSwissKnifeGlobals{cutoff, getSharedPPL(cutoff)};
+    });
+
+    reg.registerFunctor<LJMixCleanGlobals>("LJMixCleanGlobals", "LJMixClean Functor with Globals calculation", [](const double cutoff) {
+        return LJMixCleanGlobals{cutoff, getSharedPPL(cutoff)};
+    });
+
+    reg.registerFunctor<LJMixOptimalGlobals>("LJMixOptimalGlobals", "LJMixOptimal Functor with Globals calculation", [](const double cutoff) {
+        return LJMixOptimalGlobals{cutoff, getSharedPPL(cutoff)};
+    });
+
+#ifdef __AVX__
+    reg.registerFunctor<LJAVXMixPPLGlobals>("LJAVXMixPPLGlobals", "LJAVXMixPPL Functor with Globals calculation", [](const double cutoff) {
+        return LJAVXMixPPLGlobals{cutoff, getSharedPPL(cutoff)};
+    });
+
+    reg.registerFunctor<LJAVXMixGlobals>("LJAVXMixGlobals", "LJAVXMix Functor with Globals calculation", [](const double cutoff) {
+        return LJAVXMixGlobals{cutoff, getSharedPPL(cutoff)};
+    });
+
+    reg.registerFunctor<LJAVXMixNewGlobals>("LJAVXMixNewGlobals", "LJAVXMixNew Functor with Globals calculation", [](const double cutoff) {
+        return LJAVXMixNewGlobals{cutoff, getSharedPPL(cutoff)};
+    });
+#endif
+
+    reg.registerFunctor<LJMixGlobals>("LJMixGlobals", "LJMix Functor with Globals calculation", [](const double cutoff) {
+        return LJMixGlobals{cutoff, getSharedPPL(cutoff)};
+    });
+
+    reg.registerFunctor<LJHWYMixGlobals>("LJHWYMixGlobals", "LJ Highway Functor with Globals (mixing=true)", [](const double cutoff) {
+        LJHWYMixGlobals f{cutoff, getSharedPPL(cutoff)};
+        f.setVecPattern(autopas::VectorizationPatternOption::p1xVec);
+        return f;
+    });
+
+    reg.registerFunctor<LJHWYMixCleanGlobals>("LJHWYMixCleanGlobals", "LJ Highway Functor with Clean Preload Mixing (Globals)", [](const double cutoff) {
+        return LJHWYMixCleanGlobals{cutoff, getSharedPPL(cutoff)};
+    });
+
+    reg.registerFunctor<LJHWYMixSwissKnifeGlobals>("LJHWYMixSwissKnifeGlobals", "LJ Highway Functor with Swiss Knife Multi-Regime Mixing (Globals)", [](const double cutoff) {
+        return LJHWYMixSwissKnifeGlobals{cutoff, getSharedPPL(cutoff)};
+    });
+
+    reg.registerFunctor<LJHWYMixOnTheFly1DGlobals>("LJHWYMixOnTheFly1DGlobals", "LJ Highway Functor with 1D On-The-Fly Mixing (Globals)", [](const double cutoff) {
+        return LJHWYMixOnTheFly1DGlobals{cutoff, getSharedPPL(cutoff)};
+    });
+
+    reg.registerFunctor<LJHWYMixOptimalGlobals>("LJHWYMixOptimalGlobals", "Optimal Multi-Regime Highway Functor (Globals)", [](const double cutoff) {
+        return LJHWYMixOptimalGlobals{cutoff, getSharedPPL(cutoff)};
+    });
 
     // Triwise (3-Body) Functors
     reg.registerFunctor<ATM>("ATM", "Axilrod-Teller-Muto Baseline Functor", [](const double cutoff) {
@@ -834,7 +1051,8 @@ struct VerifyResult {
 
 VerifyResult verifyOneKernel(const FunctorInfo& baselineInfo, const FunctorInfo& candidateInfo,
                              const FunctorKernel kernel, const bool newton3, const size_t numParticles,
-                             const double cellSize, const double cutoff, const uint32_t seed, const double tolerance)
+                             const double cellSize, const double cutoff, const uint32_t seed, const double tolerance,
+                             const size_t numTypes = 1)
 {
     std::vector<Cell> cellsBaseline(3);
     std::vector<Cell> cellsCandidate(3);
@@ -843,15 +1061,19 @@ VerifyResult verifyOneKernel(const FunctorInfo& baselineInfo, const FunctorInfo&
     std::mt19937 genCandidate(seed);
     std::uniform_real_distribution<double> dis(0.0, cellSize);
 
+    const auto& ppl = getSharedPPL(cutoff);
     auto fillCells = [&](std::vector<Cell>& cells, std::mt19937& gen) {
         auto fillCell = [&](Cell& cell, const double xShift, const double yShift, const double zShift, const size_t startId) {
             for (size_t i = 0; i < numParticles; ++i) {
+                const size_t typeId = (startId + i) % std::max<size_t>(1, numTypes);
                 Particle p{
                     {dis(gen) + xShift, dis(gen) + yShift, dis(gen) + zShift},
                     {0., 0., 0.},
                     startId + i,
-                    0
+                    typeId
                 };
+                p.setSqrtEpsilon(std::sqrt(ppl.getEpsilon(typeId)));
+                p.setHalfSigma(ppl.getSigma(typeId) * 0.5);
                 cell.addParticle(p);
             }
         };
@@ -1170,6 +1392,7 @@ bool runVerification(const BenchmarkConfig& config, const FunctorRegistry& regis
             std::cout << "Scope:     Forces only" << std::endl;
         }
         std::cout << "Particles/cell: " << config.verifyParticles 
+                  << " | Types: " << config.numTypes
                   << " | Cell size: " << config.cellSize 
                   << " | Cutoff: " << config.cutoff 
                   << " | Tol: " << std::scientific << std::setprecision(2) << config.verifyTolerance 
@@ -1180,7 +1403,7 @@ bool runVerification(const BenchmarkConfig& config, const FunctorRegistry& regis
             for (const auto& [kernelName, kernel] : applicableKernels) {
                 auto res = verifyOneKernel(baselineInfo, candidateInfo, kernel, n3,
                                            config.verifyParticles, config.cellSize,
-                                           config.cutoff, config.seed, config.verifyTolerance);
+                                           config.cutoff, config.seed, config.verifyTolerance, config.numTypes);
 
                 std::cout << "[VERIFY] " << std::left << std::setw(12) << kernelName
                           << " | N3: " << (n3 ? "ON " : "OFF") << " | ";
@@ -1233,6 +1456,9 @@ void setupCLI(CLI::App& app, BenchmarkConfig& config, const FunctorRegistry& reg
     app.add_option("--pool-size", config.cellPoolSize, "Number of cell stencils pre-generated in pool")
        ->default_val(1000)
        ->check(CLI::PositiveNumber);
+    app.add_option("-t,--types", config.numTypes, "Number of particle types to cycle through (1 = homogeneous, >1 = heterogeneous up to 4)")
+       ->default_val(1)
+       ->check(CLI::Range(1, 4));
 
     app.add_flag("-v,--verify", config.verify, "Verify correctness between baseline and candidate functors before benchmarking");
     app.add_flag("--verify-only", config.verifyOnly, "Run correctness verification and exit immediately");
